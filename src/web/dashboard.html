@@ -2423,7 +2423,7 @@
 <header>
   <div class="header-left">
     <div class="logo">
-      <img class="logo-wordmark" src="/assets/matclaw-logo.svg" alt="OmiClaw">
+      <img class="logo-wordmark" src="/assets/omiclaw-logo.svg" alt="OmiClaw">
     </div>
     <div class="ws-badge" id="ws-badge">
       <div class="ws-dot" id="ws-dot"></div>
@@ -2485,7 +2485,7 @@
             <div class="chat-header">
               <div class="chat-header-copy">
                 <div class="chat-brand">
-                  <img class="chat-brand-mark" src="/assets/matclaw-icon-square.png" alt="OmiClaw">
+                  <img class="chat-brand-mark" src="/assets/omiclaw-icon-square.svg" alt="OmiClaw">
                   <div class="chat-brand-text">
                     <div class="chat-kicker">Local Chat</div>
                     <div class="chat-title">Chat with OmiClaw in the browser</div>
@@ -2509,7 +2509,7 @@
             <div class="chat-messages" id="chat-messages">
               <div class="chat-thread" id="chat-thread">
                 <div class="chat-empty" id="chat-empty">
-                  <div class="chat-empty-icon"><img src="/assets/matclaw-icon-square.png" alt="OmiClaw"></div>
+                  <div class="chat-empty-icon"><img src="/assets/omiclaw-icon-square.svg" alt="OmiClaw"></div>
                   <div class="chat-empty-title">Start a local conversation</div>
                   <div class="chat-empty-sub">Ask a quick question, paste a task, or drop in a file. Replies support markdown, images, and rich formatting.</div>
                 </div>
@@ -2602,10 +2602,19 @@ let filterRe = null, tab = 'live', selGroup = null;
 let activeStart = null, durTimer = null;
 const running = new Set();
 let chatSessionSearch = '';
+const CHAT_PINS_KEY = 'omiclaw.chat.pins';
+const LEGACY_CHAT_PINS_KEY = 'matclaw.chat.pins';
 let pinnedChatSessionIds = [];
 try {
-  pinnedChatSessionIds = JSON.parse(localStorage.getItem('matclaw.chat.pins') || '[]');
+  const storedPins =
+    localStorage.getItem(CHAT_PINS_KEY) ||
+    localStorage.getItem(LEGACY_CHAT_PINS_KEY) ||
+    '[]';
+  pinnedChatSessionIds = JSON.parse(storedPins);
   if (!Array.isArray(pinnedChatSessionIds)) pinnedChatSessionIds = [];
+  if (!localStorage.getItem(CHAT_PINS_KEY) && localStorage.getItem(LEGACY_CHAT_PINS_KEY)) {
+    localStorage.setItem(CHAT_PINS_KEY, JSON.stringify(pinnedChatSessionIds));
+  }
 } catch {
   pinnedChatSessionIds = [];
 }
@@ -3790,7 +3799,7 @@ function formatSessionRelative(timestamp) {
 }
 
 function persistPinnedSessions() {
-  localStorage.setItem('matclaw.chat.pins', JSON.stringify(pinnedChatSessionIds));
+  localStorage.setItem(CHAT_PINS_KEY, JSON.stringify(pinnedChatSessionIds));
 }
 
 function setChatSessionSearch(value) {
@@ -4350,7 +4359,7 @@ function appendChatBubble(role, text, timestamp, attachmentMeta) {
   avatar.className = `chat-avatar ${role}`;
   if (role === 'assistant') {
     const img = document.createElement('img');
-    img.src = '/assets/matclaw-icon-square.png';
+    img.src = '/assets/omiclaw-icon-square.svg';
     img.alt = 'OmiClaw';
     avatar.appendChild(img);
   } else {

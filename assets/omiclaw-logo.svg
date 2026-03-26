@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 84" role="img" aria-labelledby="title desc">
+  <title id="title">OmiClaw wordmark</title>
+  <desc id="desc">OmiClaw logo with an omics-inspired icon and wordmark.</desc>
+  <defs>
+    <linearGradient id="bg" x1="10" y1="6" x2="74" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="0.55" stop-color="#0ea5e9"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="72" height="72" rx="22" fill="url(#bg)"/>
+  <g transform="translate(6 6)">
+    <path d="M24 16c14 7 14 31 28 40" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-width="5.5"/>
+    <path d="M52 16C38 23 38 49 24 56" fill="none" stroke="#dbeafe" stroke-linecap="round" stroke-width="5.5" opacity="0.92"/>
+    <path d="M29 28h18M24 40h28M29 52h18" fill="none" stroke="#e0f2fe" stroke-linecap="round" stroke-width="3.5"/>
+    <circle cx="24" cy="16" r="6.5" fill="#f8fafc"/>
+    <circle cx="52" cy="16" r="6.5" fill="#bfdbfe"/>
+    <circle cx="24" cy="40" r="6.5" fill="#99f6e4"/>
+    <circle cx="52" cy="40" r="6.5" fill="#e0f2fe"/>
+    <circle cx="24" cy="56" r="6.5" fill="#f8fafc"/>
+    <circle cx="52" cy="56" r="6.5" fill="#bfdbfe"/>
+  </g>
+  <text x="96" y="38" fill="#0f172a" font-family="Segoe UI, Arial, sans-serif" font-size="31" font-weight="800">OmiClaw</text>
+  <text x="96" y="58" fill="#0f766e" font-family="Segoe UI, Arial, sans-serif" font-size="10.5" font-weight="700" letter-spacing="2.8">SINGLE-CELL TRANSCRIPTOMICS</text>
+</svg>

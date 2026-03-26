@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">OmiClaw icon</title>
+  <desc id="desc">Rounded square icon with an omics-inspired double helix mark.</desc>
+  <defs>
+    <linearGradient id="bg" x1="84" y1="68" x2="428" y2="444" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="0.52" stop-color="#0ea5e9"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="168" y1="132" x2="352" y2="384" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ecfeff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#dbeafe" stop-opacity="0.35"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect x="36" y="36" width="440" height="440" rx="124" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="148" fill="url(#glow)" opacity="0.24"/>
+  <g filter="url(#shadow)">
+    <path d="M176 128c79 36 79 220 160 256" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-width="18"/>
+    <path d="M336 128c-79 36-79 220-160 256" fill="none" stroke="#dbeafe" stroke-linecap="round" stroke-width="18" opacity="0.92"/>
+    <path d="M210 176h92" fill="none" stroke="#e0f2fe" stroke-linecap="round" stroke-width="12"/>
+    <path d="M190 234h132" fill="none" stroke="#e0f2fe" stroke-linecap="round" stroke-width="12"/>
+    <path d="M196 294h120" fill="none" stroke="#e0f2fe" stroke-linecap="round" stroke-width="12"/>
+    <path d="M220 352h72" fill="none" stroke="#e0f2fe" stroke-linecap="round" stroke-width="12"/>
+    <circle cx="176" cy="128" r="22" fill="#f8fafc"/>
+    <circle cx="336" cy="128" r="22" fill="#bfdbfe"/>
+    <circle cx="202" cy="176" r="16" fill="#99f6e4"/>
+    <circle cx="310" cy="176" r="16" fill="#e0f2fe"/>
+    <circle cx="184" cy="234" r="18" fill="#f8fafc"/>
+    <circle cx="328" cy="234" r="18" fill="#bfdbfe"/>
+    <circle cx="192" cy="294" r="18" fill="#99f6e4"/>
+    <circle cx="320" cy="294" r="18" fill="#e0f2fe"/>
+    <circle cx="220" cy="352" r="16" fill="#f8fafc"/>
+    <circle cx="292" cy="352" r="16" fill="#bfdbfe"/>
+    <circle cx="176" cy="384" r="22" fill="#99f6e4"/>
+    <circle cx="336" cy="384" r="22" fill="#f8fafc"/>
+  </g>
+</svg>

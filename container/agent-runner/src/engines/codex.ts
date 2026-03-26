@@ -153,7 +153,7 @@ export class CodexEngine implements AgentEngine {
       workingDirectory: WORKSPACE_GROUP_DIR,
       sandboxMode: 'danger-full-access' as const,
       model,
-      modelReasoningEffort: resolveModelReasoningEffort(ctx.sdkEnv),
+      modelReasoningEffort: resolveCodexReasoningEffort(ctx.sdkEnv),
       skipGitRepoCheck: true,
       additionalDirectories: additionalDirs.length > 0 ? additionalDirs : undefined,
     };
