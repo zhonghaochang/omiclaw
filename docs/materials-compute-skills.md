@@ -4,7 +4,7 @@ This document now tracks the OmiClaw single-cell skill inventory.
 
 ## Core Single-Cell Skills
 
-- `omics-compute` — environment overview, package map, workflow entry points
+- `成纤维细胞分析skill` — environment overview, package map, fibro/ICB workflow entry point
 - `data-loading` — 10x, public datasets, format conversion
 - `preprocessing` — QC, ambient RNA, normalization, HVG, dimensionality reduction, doublet detection
 - `integration` — Harmony, Scanorama, scVI, scIB-style evaluation

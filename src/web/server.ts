@@ -8,6 +8,7 @@ import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import { agentEvents, type AgentEvent } from './events.js';
+import { releaseDashboardPort } from './dashboard-port.js';
 import { parseTranscript, formatLogEntries } from './transcript-parser.js';
 import { logger } from '../logger.js';
 import { DASHBOARD_PORT, DATA_DIR, GROUPS_DIR } from '../config.js';
@@ -214,19 +215,18 @@ function getGroupsInfo(): {
 
   for (const entry of fs.readdirSync(GROUPS_DIR)) {
     const logsDir = path.join(GROUPS_DIR, entry, 'logs');
-    if (!fs.existsSync(logsDir)) continue;
-    const logs = fs
-      .readdirSync(logsDir)
-      .filter(
-        (f) =>
-          f.startsWith('container-') &&
-          f.endsWith('.log') &&
-          f !== 'container-live.log',
-      )
-      .sort()
-      .reverse();
+    // Accept groups that have a logs dir OR a conversations dir
+    const convsDir = path.join(GROUPS_DIR, entry, 'conversations');
+    if (!fs.existsSync(logsDir) && !fs.existsSync(convsDir)) continue;
+    const logs = fs.existsSync(logsDir)
+      ? fs
+          .readdirSync(logsDir)
+          .filter((f) => f.endsWith('.log'))
+          .sort()
+          .reverse()
+      : [];
 
-    // Count transcripts
+    // Count transcripts (JSONL sessions + .md conversations)
     const transcriptDir = path.join(
       DATA_DIR,
       'sessions',
@@ -240,6 +240,11 @@ function getGroupsInfo(): {
       transcriptCount = fs
         .readdirSync(transcriptDir)
         .filter((f) => f.endsWith('.jsonl')).length;
+    }
+    if (fs.existsSync(convsDir)) {
+      transcriptCount += fs
+        .readdirSync(convsDir)
+        .filter((f) => f.endsWith('.md')).length;
     }
 
     results.push({
@@ -260,24 +265,60 @@ function readLogFile(groupFolder: string, filename: string): string | null {
   return fs.readFileSync(logPath, 'utf-8');
 }
 
-/** List log files for a group */
+/** List log files for a group (matches both container-*.log and agent-*.log) */
 function listLogs(groupFolder: string): string[] {
   if (groupFolder.includes('..')) return [];
   const logsDir = path.join(GROUPS_DIR, groupFolder, 'logs');
   if (!fs.existsSync(logsDir)) return [];
   return fs
     .readdirSync(logsDir)
-    .filter((f) => f.startsWith('container-') && f.endsWith('.log'))
+    .filter((f) => f.endsWith('.log'))
     .sort()
     .reverse();
 }
 
-/** List transcript files for a group */
+/** List .md conversation files for a group */
+function listConversations(
+  groupFolder: string,
+): { file: string; size: number; modified: string }[] {
+  if (groupFolder.includes('..')) return [];
+  const dir = path.join(GROUPS_DIR, groupFolder, 'conversations');
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => {
+      const stat = fs.statSync(path.join(dir, f));
+      return { file: f, size: stat.size, modified: stat.mtime.toISOString() };
+    })
+    .sort((a, b) => b.modified.localeCompare(a.modified));
+}
+
+/** Read a conversation .md file */
+function readConversationFile(
+  groupFolder: string,
+  filename: string,
+): string | null {
+  if (filename.includes('..') || groupFolder.includes('..')) return null;
+  const filePath = path.join(
+    GROUPS_DIR,
+    groupFolder,
+    'conversations',
+    filename,
+  );
+  if (!fs.existsSync(filePath)) return null;
+  return fs.readFileSync(filePath, 'utf-8');
+}
+
+/** List transcript files for a group (JSONL sessions + .md conversations) */
 function listTranscripts(
   groupFolder: string,
 ): { file: string; size: number; modified: string }[] {
   if (groupFolder.includes('..')) return [];
-  const dir = path.join(
+  const results: { file: string; size: number; modified: string }[] = [];
+
+  // JSONL session transcripts
+  const jsonlDir = path.join(
     DATA_DIR,
     'sessions',
     groupFolder,
@@ -285,19 +326,23 @@ function listTranscripts(
     'projects',
     '-workspace-group',
   );
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith('.jsonl'))
-    .map((f) => {
-      const stat = fs.statSync(path.join(dir, f));
-      return {
+  if (fs.existsSync(jsonlDir)) {
+    for (const f of fs
+      .readdirSync(jsonlDir)
+      .filter((f) => f.endsWith('.jsonl'))) {
+      const stat = fs.statSync(path.join(jsonlDir, f));
+      results.push({
         file: f,
         size: stat.size,
         modified: stat.mtime.toISOString(),
-      };
-    })
-    .sort((a, b) => b.modified.localeCompare(a.modified));
+      });
+    }
+  }
+
+  // .md conversation archives
+  results.push(...listConversations(groupFolder));
+
+  return results.sort((a, b) => b.modified.localeCompare(a.modified));
 }
 
 /** Parse a transcript file and return formatted log */
@@ -451,6 +496,26 @@ export function startDashboard(
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(entries));
+      return;
+    }
+
+    // ── API: Conversation (Feishu .md format) ──
+    if (url.pathname === '/api/conversation') {
+      const group = url.searchParams.get('group');
+      const file = url.searchParams.get('file');
+      if (!group || !file) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing group or file parameter' }));
+        return;
+      }
+      const content = readConversationFile(group, file);
+      if (content === null) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Conversation not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(content);
       return;
     }
 
@@ -868,17 +933,47 @@ export function startDashboard(
   const MAX_PORT_ATTEMPTS = 10;
 
   const tryListen = (attempt: number) => {
-    const onError = (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE' && attempt < MAX_PORT_ATTEMPTS) {
-        currentPort++;
-        logger.info(
-          { port: currentPort },
-          `Port ${currentPort - 1} in use, trying ${currentPort}`,
-        );
-        tryListen(attempt + 1);
-        return;
+    const cleanup = () => {
+      server.off('error', onError);
+      server.off('listening', onListening);
+    };
+
+    const onListening = () => {
+      cleanup();
+      logger.info(
+        { port: currentPort },
+        `Dashboard running at http://localhost:${currentPort}`,
+      );
+    };
+
+    const handleListenError = async (err: NodeJS.ErrnoException) => {
+      cleanup();
+
+      try {
+        server.close();
+      } catch {
+        // Safe to ignore when the server never started listening.
       }
+
       if (err.code === 'EADDRINUSE') {
+        const released = await releaseDashboardPort(currentPort);
+        if (released) {
+          logger.info(
+            { port: currentPort },
+            `Recovered dashboard port ${currentPort} from a stale process, retrying`,
+          );
+          tryListen(attempt);
+          return;
+        }
+        if (attempt < MAX_PORT_ATTEMPTS) {
+          currentPort++;
+          logger.info(
+            { port: currentPort },
+            `Port ${currentPort - 1} in use, trying ${currentPort}`,
+          );
+          tryListen(attempt + 1);
+          return;
+        }
         logger.warn(
           `All ports ${PORT}-${currentPort} in use — dashboard disabled`,
         );
@@ -887,14 +982,18 @@ export function startDashboard(
       logger.error({ err }, 'Dashboard server error');
     };
 
-    server.once('error', onError);
+    const onError = (err: NodeJS.ErrnoException) => {
+      void handleListenError(err);
+    };
 
-    server.listen(currentPort, () => {
-      logger.info(
-        { port: currentPort },
-        `Dashboard running at http://localhost:${currentPort}`,
-      );
-    });
+    server.once('error', onError);
+    server.once('listening', onListening);
+
+    try {
+      server.listen(currentPort);
+    } catch (err) {
+      void handleListenError(err as NodeJS.ErrnoException);
+    }
   };
 
   tryListen(0);

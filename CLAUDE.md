@@ -22,7 +22,7 @@ Single Node.js process with Feishu, Web, and optional chat channels. Messages ar
 ## Skills
 
 Single-cell workflows live in:
-- `container/skills/omics-compute`
+- `container/skills/成纤维细胞分析skill`
 - `container/skills/data-loading`
 - `container/skills/preprocessing`
 - `container/skills/integration`
@@ -34,6 +34,9 @@ Single-cell workflows live in:
 Utility skills remain in:
 - `container/skills/agent-browser`
 - `container/skills/general-tools`
+
+Compatibility alias:
+- `container/skills/omics-compute` may remain as an alias to `container/skills/成纤维细胞分析skill`
 
 ## Development
 
