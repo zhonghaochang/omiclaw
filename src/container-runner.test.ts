@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough, Writable } from 'stream';
+import fs from 'fs';
 
 const OUTPUT_START_MARKER = '---MATCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---MATCLAW_OUTPUT_END---';
@@ -122,7 +123,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { ContainerOutput, runContainerAgent } from './container-runner.js';
+import {
+  ContainerOutput,
+  runContainerAgent,
+  writeHostStatusSnapshot,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -177,7 +182,7 @@ describe('container-runner host mode', () => {
     };
     expect(spawnOptions.env.CONDA_PREFIX).toBe('/opt/conda/envs/omiclaw');
     expect(spawnOptions.env.PATH).toMatch(
-      /^\/opt\/conda\/envs\/omiclaw\/bin:/,
+      /^\/tmp\/omiclaw-test-data\/sessions\/test-group\/\.omiclaw-bin:\/opt\/conda\/envs\/omiclaw\/bin:/,
     );
     expect(spawnOptions.env.OMICLAW_WORKSPACE_GROUP).toBe(
       '/tmp/omiclaw-test-groups/test-group',
@@ -242,5 +247,32 @@ describe('container-runner host mode', () => {
     expect(result.status).toBe('error');
     expect(result.error).toContain('timed out');
     expect(onOutput).not.toHaveBeenCalled();
+  });
+
+  it('writes a host heartbeat snapshot into the group IPC directory', () => {
+    writeHostStatusSnapshot('test-group', {
+      status: 'running',
+      pid: 4242,
+      started_at: '2026-04-03T07:30:00.000Z',
+      heartbeat_at: '2026-04-03T07:30:05.000Z',
+    });
+
+    expect(fs.mkdirSync).toHaveBeenCalledWith(
+      '/tmp/omiclaw-test-ipc/test-group',
+      { recursive: true },
+    );
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/tmp/omiclaw-test-ipc/test-group/host_status.json',
+      JSON.stringify(
+        {
+          status: 'running',
+          pid: 4242,
+          started_at: '2026-04-03T07:30:00.000Z',
+          heartbeat_at: '2026-04-03T07:30:05.000Z',
+        },
+        null,
+        2,
+      ),
+    );
   });
 });

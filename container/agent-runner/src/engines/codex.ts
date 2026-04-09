@@ -199,6 +199,7 @@ export class CodexEngine implements AgentEngine {
 
     let newSessionId: string | undefined;
     let resultText: string | null = null;
+    let lastEmittedResult: string | null = null;
     let eventCount = 0;
 
     try {
@@ -232,6 +233,14 @@ export class CodexEngine implements AgentEngine {
               case 'agent_message':
                 resultText = e.item.text;
                 ctx.log(`[Agent] ${resultText.slice(0, 500)}`);
+                if (resultText && resultText !== lastEmittedResult) {
+                  ctx.writeOutput({
+                    status: 'progress',
+                    result: resultText,
+                    newSessionId,
+                  });
+                  lastEmittedResult = resultText;
+                }
                 break;
               case 'command_execution':
                 ctx.log(`[Command] ${e.item.command} → exit ${e.item.exit_code ?? '?'}`);
@@ -289,7 +298,7 @@ export class CodexEngine implements AgentEngine {
     }
 
     // Emit the result
-    if (resultText !== null) {
+    if (resultText !== null && resultText !== lastEmittedResult) {
       ctx.writeOutput({
         status: 'success',
         result: resultText,

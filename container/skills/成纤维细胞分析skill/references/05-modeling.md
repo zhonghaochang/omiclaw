@@ -1,134 +1,154 @@
 ---
 name: 05-modeling
-description: Section 5：反作弊门控与基线预测建模。基线子集化、反作弊拦截、LODO 逻辑回归、敏感性分析。
+description: Section 5：主模型与 guardrail。基于 canonical main manifest 构建设计矩阵，执行严格 coverage 对账、primary feature audit、LODO 与敏感性分析。
 type: reference
 ---
 
-# Section 5：反作弊门控与基线预测建模
+# Section 5：主模型与 guardrail
 
 ## 概述
 
 | 项 | 说明 |
 |---|---|
-| **读入** | Section 4 的 `fibro_features.tsv` + Section 1 的 `manifest.tsv` |
-| **处理** | 基线子集化 → 反作弊拦截 → LODO 逻辑回归 → 敏感性分析 |
-| **输出** | 基线模型性能报告（AUC 等）+ 全局 SHAP 蜂姿图 |
+| 读入 | Section 4 的 `fibro_features.tsv` + Section 1 的 `manifest.tsv` |
+| 处理 | canonical main manifest inner join -> primary feature audit -> strict coverage reconciliation -> LODO -> sensitivity |
+| 输出 | `design_matrix.tsv.gz`、`primary_feature_audit.tsv`、`modeling_coverage_report.tsv`、LODO 与敏感性结果 |
 
 **前置依赖**：Section 4 完成
 
-## 处理流程（严格拦截）
+## 严格主分析合同
 
-### 第1步：基线样本子集化（Subsetting）
+建模前必须同时满足：
+- 主分析全部来自 `manifest.tsv`
+- 主分析全部是 `analysis_unit = patient`
+- `fibro_features.tsv` unique patient 数 = `manifest.tsv` unique patient 数
+- `design_matrix.tsv.gz` unique patient 数 = `manifest.tsv` unique patient 数
 
-通过 `manifest.tsv` 进行合并（Merge），**强制剔除所有 `include_main_analysis == False` 的行**。确保进入训练矩阵的样本 100% 为基线（PRE）。
+任何一个不等于，都必须直接失败。
 
-### 第2步：反作弊拦截
+## Primary model 的禁止列
 
-1. **强制从模型输入特征中剔除宏观物理量**（正则匹配 `*cells*`、`tumor_frac`、`n_cells`、`fibro_count`、`*_count`）
-2. **剔除**缺失率 > 50% 或全零/近零方差的特征
-3. **保留元数据**：`dataset_id`、`cancer_type`、`cancer_context`、`treatment_group`、`platform`、`response_tier`、`annotation_method` 设为 Metadata，保留在表中用于分组和协变量校正，但**严禁**作为模型的预测特征
+以下列只能作为 metadata / provenance，不得进入 `features_used.tsv`、`coefficients.tsv`、`shap_values.tsv.gz`：
 
-**禁止出现在 primary model 的 features_used / coefficients 中的列：**
-- `dataset_id_*`、`cancer_context_*`、`cancer_type_*`、`platform_*`、`response_tier_*`、`annotation_method_*`
-- `n_cells`、`fibro_count`、`total_cells`、`cells_post_qc`、`cell_count`、`total_counts`
+- `include_main_analysis`
+- `include_mechanism_analysis`
+- `analysis_unit`
+- `sample_id`
+- `lesion_id`
+- `source_analysis_unit`
+- `source_sample_id`
+- `source_lesion_id`
+- `dataset_id`
+- `cancer_context`
+- `cancer_type`
+- `platform`
+- `response_tier`
+- `annotation_method`
+- `sample_id_main`
+- 任意 `*_x` / `*_y`
+- 任意 count-like 技术代理：`n_cells`、`fibro_count`、`total_cells`、`cells_post_qc`、`total_counts`
 
-### 第3步：建模覆盖率核对（mandatory）
+## 处理流程
 
-建模前必须生成 `modeling_coverage_report.tsv`：
+### 第 1 步：基于 canonical main manifest 子集化
+
+- 通过 `manifest.tsv` 的 `include_main_analysis = True` 子集化
+- 只保留 `response_binary` 为 `Response/Non-response` 的 patient-level 行
+- 若 `analysis_unit != patient`，直接报错
+
+### 第 2 步：Primary feature audit
+
+- 生成 `primary_feature_audit.tsv`
+- 逐列记录：
+  - `feature_name`
+  - `include_in_primary`
+  - `reason`
+- 只要有 forbidden feature 被标记 `include_in_primary = True`，立即 `ERROR: forbidden_primary_feature`
+
+### 第 3 步：Coverage 对账
+
+必须输出 `modeling_coverage_report.tsv`：
 
 | 列 | 含义 |
 |---|---|
 | `dataset_id` | 数据集 |
-| `manifest_patients` | manifest 中主分析病人数 |
-| `patient_feature_rows` | 特征表中病人数 |
-| `modeled_rows` | 实际进入模型的病人数 |
-| `status` | ok / ERROR |
+| `manifest_patients` | 主 manifest 病人数 |
+| `patient_feature_rows` | `fibro_features.tsv` 病人数 |
+| `modeled_rows` | 实际进入设计矩阵的病人数 |
+| `status` | `ok` / `ERROR` |
 
-强制规则：
-- 总 `modeled_rows` < 主 manifest 的 90% → ERROR
-- 任一主数据集损失 > 20% → ERROR
-- 任一主数据集 `modeled_rows = 0` → ERROR
+正式规则不是 `>= 90%`，而是**严格等量覆盖**：
+- `patient_feature_rows != manifest_patients` -> ERROR
+- `modeled_rows != manifest_patients` -> ERROR
+- 任一主数据集 `modeled_rows = 0` -> ERROR
 
-### 第4步：建模——带惩罚项的逻辑回归
+### 第 4 步：逻辑回归主模型
 
-- 默认用 L2 惩罚（岭回归）
-- R:NR 比例超过 2:1 时使用 `class_weight="balanced"`
-- 特征板很大且高度相关时用弹性网络
-
-**参考实现骨架（见 `fibro_primary_model_guardrails.py`）：**
+默认骨架：
 
 ```python
 model = Pipeline(steps=[
     ("imp", SimpleImputer(strategy="median")),
     ("scaler", StandardScaler()),
     ("clf", LogisticRegression(
-        penalty="l2", solver="liblinear", max_iter=4000,
-        class_weight="balanced", random_state=42,
+        penalty="l2",
+        solver="liblinear",
+        max_iter=4000,
+        class_weight="balanced",
+        random_state=42,
     )),
 ])
 ```
 
-### 第5步：辅助验证——树模型
+### 第 5 步：LODO 与敏感性分析
 
-- 随机森林或梯度提升树作为验证
-- 用于检测非线性信号和交互效应
-- 不用树模型结果替代逻辑回归结果
+- LODO 至少要有 3 个有效 fold
+- fold AUC `<= 0.55` 必须标记 `near_random`
+- 每个 sensitivity / ablation scenario 都必须：
+  - 重建 design matrix
+  - 重跑完整 LODO
+  - 输出独立 `fold_metrics.tsv`
+  - 输出独立 `heldout_predictions.tsv`
 
-## 验证策略
+## 若出现以下情况必须立即失败
 
-### 外部验证：留一数据集验证（LODO）
+- `sample_id_main` 出现在设计矩阵
+- 存在 `*_x` / `*_y` merge artifact 列
+- route flag 真假混杂
+- modeled cohort 相比 manifest 收缩
+- `features_used.tsv` 与 `primary_feature_audit.tsv` 不一致
 
-```text
-对 {EGAS_Cohort1, GSE236581, GSE269936, GSE123813} 中的每个数据集 D：
-    在除 D 之外的所有数据集上训练
-    在 D 上测试
-    记录 AUC、precision-recall AUC
-报告各 fold 的均值和标准差
-```
+## 强制作图
 
-### LODO 有效性检查
-
-| 检查项 | 规则 |
+| 图名 | 目的 |
 |---|---|
-| 最低 fold 数 | 至少 3 个有效 fold |
-| AUC 阈值标注 | fold ROC-AUC ≤ 0.55 → 标注 `validity = near_random` 并解释 |
-| 排除 fold 报告 | 排除的数据集必须写明原因 |
-| Tier 2 敏感性 | 必须额外报告排除 `tier2_surrogate` 队列后的结果 |
-| 置信度估计 | LODO fold ≤ 5 时，必须补充 bootstrap CI（1000 次）或 permutation test |
-| 禁止学习元特征 | features_used 中不得出现 dataset_id_*、n_cells 等 |
+| `Fig_M1_LODO_fold_performance` | 每个 held-out cohort 的 AUC / PR-AUC 表现 |
+| `Fig_M2_heldout_prediction_strip_or_calibration` | held-out 预测概率、校准或 strip plot |
+| `Fig_M3_primary_feature_audit_summary` | forbidden / metadata / kept biological features 的构成摘要 |
 
-### 敏感性分析（最低要求）
+每张图都必须同步交付：`pdf`、`png`、`*_source_data.tsv`、`*_caption.md`
 
-1. 每次去除一个数据集重新训练
-2. 删除缺失率 > 20% 的特征
-3. 成纤维细胞专属模型 vs 免疫专属模型 vs 全模型
-4. 完全排除 `response_tier = tier2_surrogate` 队列后重新训练
-5. `annotation_method` 敏感性：仅 `original_metadata` 队列 vs 全部队列
-6. 样本量加权：对严重不平衡的数据集，报告移除后是否稳定
-
-每个 scenario 必须**重建 design matrix 并重新跑 LODO**，落地 `sensitivity/<scenario>__fold_metrics.tsv` 与 `sensitivity/<scenario>__heldout_predictions.tsv`。
-
-## Deliverables（交付物清单）
+## Deliverables
 
 | 交付物 | 路径 |
 |---|---|
-| primary_feature_audit.tsv | `work/modeling/{run_id}/primary_feature_audit.tsv` |
-| modeling_coverage_report.tsv | `work/modeling/{run_id}/modeling_coverage_report.tsv` |
-| features_used.tsv | `work/modeling/{run_id}/features_used.tsv` |
-| fold_metrics.tsv | `work/modeling/{run_id}/fold_metrics.tsv` |
-| heldout_predictions.tsv | `work/modeling/{run_id}/heldout_predictions.tsv` |
-| coefficients.tsv | `work/modeling/{run_id}/coefficients.tsv` |
-| shap_values.tsv.gz | `work/modeling/{run_id}/shap_values.tsv.gz` |
+| design matrix | `work/modeling/{run_id}/design_matrix.tsv.gz` |
+| primary feature audit | `work/modeling/{run_id}/primary_feature_audit.tsv` |
+| coverage report | `work/modeling/{run_id}/modeling_coverage_report.tsv` |
+| features used | `work/modeling/{run_id}/features_used.tsv` |
+| fold metrics | `work/modeling/{run_id}/fold_metrics.tsv` |
+| heldout predictions | `work/modeling/{run_id}/heldout_predictions.tsv` |
+| coefficients | `work/modeling/{run_id}/coefficients.tsv` |
+| shap values | `work/modeling/{run_id}/shap_values.tsv.gz` |
 | sensitivity 明细 | `work/modeling/{run_id}/sensitivity/*__fold_metrics.tsv` |
-| 全局 SHAP 蜂姿图 | `work/figures/main/Fig_M4_SHAP_beeswarm.pdf` |
+| Section 5 图包 | `work/figures/main/Fig_M1*`, `Fig_M2*`, `Fig_M3*` |
 
-### 完成检查
+## 完成检查
 
-- [ ] primary_feature_audit.tsv 无 forbidden_primary_feature
-- [ ] modeling_coverage_report.tsv 无 ERROR
-- [ ] features_used.tsv 与 primary_feature_audit.tsv 一致
-- [ ] LODO fold_metrics.tsv 已输出，near_random fold 已标注
-- [ ] 每个 sensitivity scenario 有独立的 fold_metrics + heldout_predictions
-- [ ] 全局 SHAP 图已生成
-
-**完成后可暂停并回复用户，提示进入 Section 6。**
+- [ ] `primary_feature_audit.tsv` 无 forbidden feature
+- [ ] `modeling_coverage_report.tsv` 无 ERROR
+- [ ] `fibro_features.tsv`、`design_matrix.tsv.gz` 与主 manifest 行数完全一致
+- [ ] `features_used.tsv` 与 `primary_feature_audit.tsv` 一致
+- [ ] `fold_metrics.tsv` 已输出，near-random fold 已标注
+- [ ] 每个 sensitivity scenario 有独立 `fold_metrics + heldout_predictions`
+- [ ] `Fig_M1`、`Fig_M2`、`Fig_M3` 已生成

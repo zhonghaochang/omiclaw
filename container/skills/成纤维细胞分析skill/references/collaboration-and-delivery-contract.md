@@ -1,6 +1,6 @@
 # Shared Collaboration and Delivery Contract
 
-This reference is the shared collaboration, progress-reporting, storage, traceability, and figure-delivery contract for `成纤维细胞分析skill`.
+This reference is the shared collaboration, progress-reporting, traceability, anomaly-reporting, and figure-delivery contract for `成纤维细胞分析skill`.
 
 Use this file whenever a task is:
 - longer than 30 seconds
@@ -8,63 +8,94 @@ Use this file whenever a task is:
 - expected to produce formal figures rather than ad hoc screenshots
 - executed in a repository that primarily relies on `成纤维细胞分析skill`
 
-Legacy paths such as `omics-compute/` or `fibro-response-ml-comprehensive-zh/` may remain as compatibility aliases. The canonical entry is `成纤维细胞分析skill/SKILL.md`.
-
 ## Single-Skill Mode
 
 Treat `成纤维细胞分析skill/SKILL.md` as the root environment guide.
 
 In single-skill mode:
-- Use `成纤维细胞分析skill/SKILL.md` for environment, package availability, runtime caveats, and the default fibro/ICB workflow
-- Use `references/` for routing, validation, and delivery details
+- use `SKILL.md` for workflow, environment, package availability, and stage order
+- use `00-07` for stage-specific rules
+- use `08-figure-standards.md` for formal figure specs
 
 ## Real-Time Progress Reporting
 
-For any analysis that takes more than 30 seconds, you must use `mcp__omiclaw__send_message` to send real-time progress updates to the user. The user is on a web dashboard and cannot see internal work until a message is sent or the task finishes.
+For any analysis that takes more than 30 seconds, you must send real-time progress updates.
 
-Minimum reporting rules:
-- Send a plan message before starting multi-step work
-- Send a checkpoint after each major stage with specific numbers and findings
-- Send anomaly alerts immediately when you discover issues
-- Send a final summary with scientific conclusions, not just file paths
-- Never go silent for more than 60 seconds during a long-running task
+Minimum rules:
+- send a plan message before starting multi-step work
+- send a checkpoint after each major stage with specific numbers
+- send anomaly alerts immediately when issues are discovered
+- never go silent for more than 60 seconds during a long run
+- send a final summary with scientific conclusions, not just file paths
+- do not stop a still-progressing computation merely to satisfy the 60-second reporting rule; send the update before the long step or during log-based monitoring
 
-### Mandatory Checkpoints
+## Mandatory Checkpoints
 
 | Seq | Timing | Must include |
 |---|---|---|
-| 0 | task start | analysis plan, expected stages |
-| 1 | before running main script | script path, whether regenerated or patched, script hash, whether preflight/compliance gate passed, whether run directory hygiene passed, any blocking ERROR items |
+| 0 | task start | analysis plan, expected stages, whether strict mode is active |
+| 1 | before main script | script path, whether regenerated or patched, script hash, compliance result, run directory hygiene result |
 | 2 | after data loading | per-cohort sample counts, R/NR distribution |
-| 3 | after manifest validation | validation results, excluded sample counts and reasons, WARN/ERROR items |
+| 3 | after manifest validation | main-analysis patient count, `analysis_unit` check, source id completeness, exclusions and reasons |
 | 4 | after QC | retained cell counts and filter fractions per dataset |
-| 5 | after annotation | detected major cell types, whether key compartments completed second-layer sub-clustering, coverage audit summary |
-| 6 | after feature construction | total features, passed features, removed features and reasons, manifest rows vs patient-feature rows vs modeled rows by dataset, whether any forbidden meta/technical features remain |
-| 7 | after communication | tool used, whether result is real communication or proxy, whether any all-zero or all-NaN matrix exists |
-| 8 | after modeling | per-fold AUC, excluded folds, top features, ablation findings, whether any top features are dataset/context/count proxies |
-| 9 | after figure generation | figure paths and one-line meaning of each figure |
-| 10 | final summary | scientific conclusion, effect direction/strength, limitations, recommended next step |
+| 5 | after atlas | `qc_total_cells`, `atlas_input_cells`, `harmony_embedding_shape`, checkpoint hit/miss, invalidated cache reason, full-data confirmation, `Fig_S2` three-panel readiness |
+| 6 | after annotation | detected major cell types, second-layer clustering status, unresolved summary, schema repair result |
+| 7 | after feature construction | total features, passed features, removed features, metadata backfill coverage, manifest rows vs feature rows |
+| 8 | after communication | tool used or blocked reason, whether result is real communication or blocked diagnostics |
+| 9 | after modeling | per-fold AUC, near-random folds, top features, whether any forbidden meta/route/count features remain |
+| 10 | after attribution | evidence grade, SHAP top features, ablation findings, whether strong claims are allowed |
+| 11 | after mechanism validation | valid vs blocked, per-cohort usable samples, key stats or block reasons |
+| 12 | after figure generation | figure paths, figure classes covered, whether pdf/png/source_data/caption/index are complete |
+| 13 | final summary | scientific conclusion, effect direction/strength, limitations, recommended next step |
 
-### Message Content Rules
+## Anomaly Taxonomy
 
-- Messages must contain numbers and specific findings; avoid empty status lines such as "QC done"
-- Report abnormalities immediately instead of waiting until the end
+The following anomalies must be reported immediately when they occur:
+- `missing_manifest_metadata_in_cached_annotation`
+- `late_route_merge_suffix_conflict`
+- `atlas_cell_count_mismatch`
+- `atlas_checkpoint_invalidated`
+- `atlas_shortcut_parameters_forbidden`
+- `mechanism_annotation_blocked`
+- `forbidden_primary_feature`
+- `modeling_coverage_mismatch`
+- `incomplete_manifest_backfill`
+- `weak_evidence`
+
+## Message Content Rules
+
+- Messages must contain numbers and specific findings
+- Do not hide anomalies until the final message
 - Final summaries must contain interpretation, not only file paths
-- If a fold is near-random, if subtypes are all zero, if a communication matrix is blank, or if sub-clustering is incomplete, say so explicitly
-- If a generated script was reused, hash-identical to a prior run, or failed the compliance gate, say so explicitly before any long run starts
-- If the run directory is not clean, contains nested legacy result trees, or already contains proxy communication files, say so explicitly before any long run starts
-- If the modeled cohort shrinks materially relative to `manifest.tsv`, say so explicitly and report the per-dataset attrition
-- If `methods.md` / `figure_legend.md` / markers files are placeholder-like or empty, say so explicitly instead of calling the delivery complete
-- If the primary model still contains `dataset_id_*`、`cancer_context_*`、`platform_*`、`n_cells` or absolute count features, report that immediately as a modeling failure
-- If `primary_feature_audit.tsv` is missing, or if `features_used.tsv` disagrees with it, report that immediately instead of describing the model as finalized
+- If a fold is near-random, if a mechanism cohort is blocked, or if unresolved fractions are high, say so explicitly
+- If modeled rows shrink relative to `manifest.tsv`, say so explicitly and report per-dataset attrition
+- If `primary_feature_audit.tsv` is missing or disagrees with `features_used.tsv`, report that as a modeling failure
+- If `methods.md` / `figure_legend.md` are placeholder-like, do not present delivery as complete
 
-### Prohibited Collaboration Behavior
+## Watchdog and Fallback Policy
 
-- Running for 10+ minutes and then sending only "analysis complete"
-- Listing file paths without explaining what they mean
-- Omitting limitations or known problems
-- Hiding anomalous results such as AUC close to random
-- Downgrading deliverables because an optional helper skill is absent
+For any run expected to exceed 60 seconds:
+- use host-managed `start_job` for the primary long-running script whenever possible
+- do not rely on `nohup`, `setsid`, shell `&`, or parent-query-bound foreground processes as the formal execution path
+- for very large single-cell runs, long wall-clock time alone is not evidence of a stall
+- if `start_job` is temporarily unavailable but the active foreground run still shows progress, keep monitoring that run rather than interrupting and restarting it
+- a runtime stall must be evidenced, not guessed; at minimum inspect logs plus process state before deciding a run is blocked
+- for 200k+ cell atlas / compartment jobs, allow multi-hour clustering / Leiden / marker phases and use progress evidence, not impatience, to decide whether to continue
+- treat ad hoc shell backgrounding only as emergency debugging, not as a delivery mechanism
+
+watchdog is allowed to:
+- monitor
+- detect failure or stalling
+- restart
+- record audit evidence
+
+watchdog is not allowed to:
+- generate fallback “success” artifacts
+- mark blocked stages as completed
+- replace real outputs with synthetic placeholders
+- interrupt and restart a long-running analysis solely because it has been running for “too long” while progress evidence still exists
+
+`stage6_fallback_mechanism.py` and `stage7_fallback_finalize.py` may remain for audit or debugging, but they must not be part of the formal success path.
 
 ## File Storage
 
@@ -85,19 +116,19 @@ Recommended layout:
 ```
 
 Storage rules:
-- Never write formal outputs to `/tmp/`
-- Keep analysis outputs in stable, replayable directory structures
-- Every major stage should have either `README.md`, `index.tsv`, or an equivalent stage summary
+- never write formal outputs to `/tmp/`
+- keep outputs in stable, replayable directory structures
+- every major stage should have an index or summary table
 
 ## Process Traceability
 
 Default to strong traceability mode:
-- Every major stage should emit audit tables, parameter records, QC summaries, and figure source data
-- Each major output directory should contain a short usage description and key input provenance
-- Important intermediate tables should use explicit column names rather than unexplained abbreviations
+- every major stage should emit audit tables, parameter records, QC summaries, and figure source data
+- each major output directory should contain key input provenance
+- important tables must use explicit column names rather than unexplained abbreviations
 
 At minimum, a new team member reading only `work/` should be able to answer:
-- which samples entered main analysis and which did not
+- which patients entered main analysis and which did not
 - what QC was performed per dataset
 - how cell types and subtypes were annotated
 - how patient-level features were aggregated
@@ -106,62 +137,32 @@ At minimum, a new team member reading only `work/` should be able to answer:
 
 ## Figure and Delivery Standards
 
-Formal figures are mandatory unless the user explicitly says not to produce figures.
+Formal figures are mandatory unless the user explicitly says otherwise.
+
+All formal figures must follow `08-figure-standards.md`.
 
 Per formal figure, save at least:
-- vector output: `pdf` or `svg`
+- vector output: `pdf`
 - bitmap output: high-resolution `png`
 - source data: `*_source_data.tsv`
 - caption/description: `*_caption.md`
 
-Style defaults:
-- white background, restrained palette, colorblind-safe hues
-- editable vector text where possible
-- consistent font hierarchy
-- remove unnecessary top/right spines
-- prefer direct labels or compact legends
-
-### Figure Acceptance Floor
-
-The final results directory must include at least:
-- `figures/index.tsv`
-- `figure_data/`
-- `figures/README.md` or an equivalent figure guide
-
-If only patient/sample aggregation is available, still deliver at least four figure classes:
-- cohort composition or inclusion/exclusion figure
-- key feature distribution figure
-- cross-source effect or forest/meta figure
-- model or ablation or calibration or other explanatory figure
-
-If raw single-cell objects are unavailable and UMAP/marker figures cannot be generated:
-- explain the reason in `README.md`
-- explain the reason again in the final response
-
-### Single-Cell Figure Pack Minimum
-
-For genuine single-cell analyses, the minimum formal pack is:
-- UMAP of major cell compartments
-- UMAP of the focal lineage or subtype structure
-- marker dotplot or heatmap for annotation evidence
-- sample or response composition figure
-- one response-associated effect/model summary figure
-
-If only aggregate-layer analysis was completed, label the result explicitly as aggregate-layer output and do not present it as full single-cell figure coverage.
+Final figure package must include:
+- `work/figures/index.tsv`
+- `work/figures/README.md`
+- `work/figure_data/`
 
 ## Delivery Failure Conditions
 
-Any of the following counts as incomplete delivery by default:
+Any of the following counts as incomplete delivery:
 - only result tables with no formal figure directory
 - only PNG files without vector files, source data, and captions
-- figures exist but the final response does not enumerate them
-- no figure index or equivalent figure manifest
-- missing figure classes with no written reason
+- no `figures/index.tsv` or `figures/README.md`
+- using a blocked stage as if it were complete
 - long-running execution with no progress messages
-- generated or patched main script was executed without first reporting path/hash/preflight status
-- a non-clean run directory was used without first reporting hygiene status and clearing legacy payload
+- executing a main script without first reporting path/hash/preflight status
 - final summary contains only file paths and no scientific interpretation
-- `work/audit/run_pipeline.log` missing or empty at the end of the run
+- `run_pipeline.log` missing or empty
 - placeholder `methods.md` / `figure_legend.md` presented as final delivery
-- primary model dominated by dataset/context/count proxy features without explicit failure labeling
-- sensitivity analysis reported only as a summary table without scenario-level `fold_metrics` / `heldout_predictions`
+- primary model dominated by route/meta/count proxy features without explicit failure labeling
+- mechanism validation blocked but reported as a successful closed loop

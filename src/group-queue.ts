@@ -205,8 +205,20 @@ export class GroupQueue {
   markSessionCleared(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.sessionCleared = true;
+    state.pendingMessages = false;
     // Clear groupFolder so sendMessage() returns false immediately
     state.groupFolder = null;
+    if (state.active && !state.process) {
+      logger.warn(
+        { groupJid },
+        'Clearing stale active queue state after session reset',
+      );
+      state.active = false;
+      state.idleWaiting = false;
+      state.isTaskContainer = false;
+      state.runningTaskId = null;
+      state.containerName = null;
+    }
   }
 
   /**

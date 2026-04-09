@@ -5,8 +5,26 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
+import {
+  createTask,
+  deleteTask,
+  getJobById,
+  getTaskById,
+  updateTask,
+} from './db.js';
+import {
+  isValidGroupFolder,
+  resolveGroupFolderPath,
+  resolveGroupIpcPath,
+} from './group-folder.js';
+import {
+  cancelBackgroundJob,
+  kickJobSupervisorNow,
+  queueBackgroundJob,
+  restartBackgroundJob,
+  serializeJob,
+  syncJobSnapshotsForGroups,
+} from './job-manager.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -25,6 +43,42 @@ export interface IpcDeps {
 }
 
 let ipcWatcherRunning = false;
+let ipcWatcherTimer: ReturnType<typeof setTimeout> | null = null;
+
+interface GroupIpcContext {
+  sourceGroup: string;
+  isMain: boolean;
+  messagesDir: string;
+  tasksDir: string;
+  jobsDir: string;
+}
+
+function writeJobAck(
+  sourceGroup: string,
+  jobId: string,
+  payload:
+    | { ok: true; job: ReturnType<typeof serializeJob>; note?: string }
+    | { ok: false; reason: string },
+): void {
+  const ackDir = path.join(resolveGroupIpcPath(sourceGroup), 'job_ack');
+  fs.mkdirSync(ackDir, { recursive: true });
+
+  const ackPath = path.join(ackDir, `${jobId}.json`);
+  const tempPath = `${ackPath}.tmp`;
+  fs.writeFileSync(
+    tempPath,
+    JSON.stringify(
+      {
+        jobId,
+        acknowledged_at: new Date().toISOString(),
+        ...payload,
+      },
+      null,
+      2,
+    ),
+  );
+  fs.renameSync(tempPath, ackPath);
+}
 
 export function startIpcWatcher(deps: IpcDeps): void {
   if (ipcWatcherRunning) {
@@ -36,6 +90,111 @@ export function startIpcWatcher(deps: IpcDeps): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
 
+  const scheduleNextPass = (fn: () => Promise<void>): void => {
+    if (!ipcWatcherRunning) return;
+    ipcWatcherTimer = setTimeout(() => {
+      void fn();
+    }, IPC_POLL_INTERVAL);
+    ipcWatcherTimer.unref?.();
+  };
+
+  const moveToErrorDir = (
+    sourceGroup: string,
+    file: string,
+    filePath: string,
+  ): void => {
+    const errorDir = path.join(ipcBaseDir, 'errors');
+    fs.mkdirSync(errorDir, { recursive: true });
+    fs.renameSync(filePath, path.join(errorDir, `${sourceGroup}-${file}`));
+  };
+
+  const processGroupMessages = async (
+    context: GroupIpcContext,
+    registeredGroups: Record<string, RegisteredGroup>,
+  ): Promise<void> => {
+    const { sourceGroup, isMain, messagesDir } = context;
+    try {
+      if (!fs.existsSync(messagesDir)) return;
+      const messageFiles = fs
+        .readdirSync(messagesDir)
+        .filter((f) => f.endsWith('.json'));
+      for (const file of messageFiles) {
+        const filePath = path.join(messagesDir, file);
+        try {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+          if (data.type === 'message' && data.chatJid && data.text) {
+            const targetGroup = registeredGroups[data.chatJid];
+            if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
+              await deps.sendMessage(data.chatJid, data.text);
+              logger.info(
+                { chatJid: data.chatJid, sourceGroup },
+                'IPC message sent',
+              );
+            } else {
+              logger.warn(
+                { chatJid: data.chatJid, sourceGroup },
+                'Unauthorized IPC message attempt blocked',
+              );
+            }
+          }
+          fs.unlinkSync(filePath);
+        } catch (err) {
+          logger.error(
+            { file, sourceGroup, err },
+            'Error processing IPC message',
+          );
+          moveToErrorDir(sourceGroup, file, filePath);
+        }
+      }
+    } catch (err) {
+      logger.error({ err, sourceGroup }, 'Error reading IPC messages directory');
+    }
+  };
+
+  const processGroupTasks = async (context: GroupIpcContext): Promise<void> => {
+    const { sourceGroup, isMain, tasksDir } = context;
+    try {
+      if (!fs.existsSync(tasksDir)) return;
+      const taskFiles = fs
+        .readdirSync(tasksDir)
+        .filter((f) => f.endsWith('.json'));
+      for (const file of taskFiles) {
+        const filePath = path.join(tasksDir, file);
+        try {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+          await processTaskIpc(data, sourceGroup, isMain, deps);
+          fs.unlinkSync(filePath);
+        } catch (err) {
+          logger.error({ file, sourceGroup, err }, 'Error processing IPC task');
+          moveToErrorDir(sourceGroup, file, filePath);
+        }
+      }
+    } catch (err) {
+      logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+    }
+  };
+
+  const processGroupJobs = async (context: GroupIpcContext): Promise<void> => {
+    const { sourceGroup, isMain, jobsDir } = context;
+    try {
+      if (!fs.existsSync(jobsDir)) return;
+      const jobFiles = fs.readdirSync(jobsDir).filter((f) => f.endsWith('.json'));
+      for (const file of jobFiles) {
+        const filePath = path.join(jobsDir, file);
+        try {
+          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+          await processJobIpc(data, sourceGroup, isMain, deps);
+          fs.unlinkSync(filePath);
+        } catch (err) {
+          logger.error({ file, sourceGroup, err }, 'Error processing IPC job');
+          moveToErrorDir(sourceGroup, file, filePath);
+        }
+      }
+    } catch (err) {
+      logger.error({ err, sourceGroup }, 'Error reading IPC jobs directory');
+    }
+  };
+
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
@@ -46,7 +205,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
       });
     } catch (err) {
       logger.error({ err }, 'Error reading IPC base directory');
-      setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+      scheduleNextPass(processIpcFiles);
       return;
     }
 
@@ -58,99 +217,37 @@ export function startIpcWatcher(deps: IpcDeps): void {
       if (group.isMain) folderIsMain.set(group.folder, true);
     }
 
-    for (const sourceGroup of groupFolders) {
-      const isMain = folderIsMain.get(sourceGroup) === true;
-      const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
-      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+    const groupContexts: GroupIpcContext[] = groupFolders.map((sourceGroup) => ({
+      sourceGroup,
+      isMain: folderIsMain.get(sourceGroup) === true,
+      messagesDir: path.join(ipcBaseDir, sourceGroup, 'messages'),
+      tasksDir: path.join(ipcBaseDir, sourceGroup, 'tasks'),
+      jobsDir: path.join(ipcBaseDir, sourceGroup, 'jobs'),
+    }));
 
-      // Process messages from this group's IPC directory
-      try {
-        if (fs.existsSync(messagesDir)) {
-          const messageFiles = fs
-            .readdirSync(messagesDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of messageFiles) {
-            const filePath = path.join(messagesDir, file);
-            try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
-                } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
-                }
-              }
-              fs.unlinkSync(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC message',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.error(
-          { err, sourceGroup },
-          'Error reading IPC messages directory',
-        );
-      }
-
-      // Process tasks from this group's IPC directory
-      try {
-        if (fs.existsSync(tasksDir)) {
-          const taskFiles = fs
-            .readdirSync(tasksDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of taskFiles) {
-            const filePath = path.join(tasksDir, file);
-            try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(data, sourceGroup, isMain, deps);
-              fs.unlinkSync(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC task',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
-      }
+    for (const context of groupContexts) {
+      await processGroupJobs(context);
+    }
+    for (const context of groupContexts) {
+      await processGroupTasks(context);
+    }
+    for (const context of groupContexts) {
+      await processGroupMessages(context, registeredGroups);
     }
 
-    setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
+    scheduleNextPass(processIpcFiles);
   };
 
-  processIpcFiles();
+  void processIpcFiles();
   logger.info('IPC watcher started (per-group namespaces)');
+}
+
+export function _resetIpcWatcherForTests(): void {
+  ipcWatcherRunning = false;
+  if (ipcWatcherTimer) {
+    clearTimeout(ipcWatcherTimer);
+    ipcWatcherTimer = null;
+  }
 }
 
 export async function processTaskIpc(
@@ -385,5 +482,224 @@ export async function processTaskIpc(
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
+  }
+}
+
+export async function processJobIpc(
+  data: {
+    type: string;
+    jobId?: string;
+    title?: string;
+    command?: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    max_restarts?: number;
+    notify_on_finish?: boolean;
+    stale_after_ms?: number;
+    auto_followup_on_failure?: boolean;
+    max_recovery_turns?: number;
+    recovery_prompt?: string;
+    targetJid?: string;
+  },
+  sourceGroup: string,
+  isMain: boolean,
+  deps: IpcDeps,
+): Promise<void> {
+  const registeredGroups = deps.registeredGroups();
+
+  switch (data.type) {
+    case 'start_job': {
+      if (!data.jobId || !data.command || !data.targetJid) {
+        if (data.jobId) {
+          writeJobAck(sourceGroup, data.jobId, {
+            ok: false,
+            reason:
+              'Invalid start_job request: missing jobId, command, or targetJid.',
+          });
+        }
+        logger.warn({ data, sourceGroup }, 'Invalid start_job request');
+        break;
+      }
+
+      const targetGroupEntry = registeredGroups[data.targetJid];
+      if (!targetGroupEntry) {
+        writeJobAck(sourceGroup, data.jobId, {
+          ok: false,
+          reason: `Cannot start job: target group is not registered (${data.targetJid}).`,
+        });
+        logger.warn(
+          { targetJid: data.targetJid, sourceGroup },
+          'Cannot start job: target group not registered',
+        );
+        break;
+      }
+
+      if (!isMain && targetGroupEntry.folder !== sourceGroup) {
+        writeJobAck(sourceGroup, data.jobId, {
+          ok: false,
+          reason:
+            'Unauthorized start_job attempt: non-main groups may only start jobs inside their own workspace.',
+        });
+        logger.warn(
+          { sourceGroup, targetFolder: targetGroupEntry.folder },
+          'Unauthorized start_job attempt blocked',
+        );
+        break;
+      }
+
+      const groupRoot = resolveGroupFolderPath(targetGroupEntry.folder);
+      const cwd = data.cwd
+        ? path.resolve(groupRoot, data.cwd)
+        : groupRoot;
+      const relativeCwd = path.relative(groupRoot, cwd);
+      if (
+        !isMain &&
+        (relativeCwd === '..' ||
+          relativeCwd.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relativeCwd))
+      ) {
+        writeJobAck(sourceGroup, data.jobId, {
+          ok: false,
+          reason: `Unauthorized start_job cwd outside group root: ${cwd}`,
+        });
+        logger.warn(
+          { sourceGroup, cwd, groupRoot },
+          'Unauthorized start_job cwd outside group root blocked',
+        );
+        break;
+      }
+
+      queueBackgroundJob({
+        id: data.jobId,
+        group_folder: targetGroupEntry.folder,
+        chat_jid: data.targetJid,
+        title: data.title || data.jobId,
+        command: data.command,
+        cwd,
+        env: data.env,
+        max_restarts:
+          typeof data.max_restarts === 'number' && data.max_restarts >= 0
+            ? data.max_restarts
+            : 0,
+        stale_after_ms:
+          typeof data.stale_after_ms === 'number' && data.stale_after_ms > 0
+            ? data.stale_after_ms
+            : undefined,
+        notify_on_finish: data.notify_on_finish !== false,
+        metadata: {
+          sourceGroup,
+          auto_followup_on_failure: data.auto_followup_on_failure !== false,
+          max_recovery_turns:
+            typeof data.max_recovery_turns === 'number' &&
+            data.max_recovery_turns > 0
+              ? data.max_recovery_turns
+              : 3,
+          recovery_prompt:
+            typeof data.recovery_prompt === 'string' &&
+            data.recovery_prompt.trim()
+              ? data.recovery_prompt
+              : undefined,
+        },
+      });
+      const queuedJob = getJobById(data.jobId);
+      if (!queuedJob) {
+        writeJobAck(sourceGroup, data.jobId, {
+          ok: false,
+          reason:
+            'Host consumed the request, but the job record was not created. Check host logs.',
+        });
+        logger.warn(
+          { jobId: data.jobId, sourceGroup },
+          'Background job request consumed without creating a job record',
+        );
+        break;
+      }
+
+      writeJobAck(sourceGroup, data.jobId, {
+        ok: true,
+        job: serializeJob(queuedJob),
+      });
+
+      let kickError: string | null = null;
+      try {
+        await kickJobSupervisorNow();
+      } catch (err) {
+        kickError = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { err, jobId: data.jobId, sourceGroup },
+          'Immediate background job supervisor pass failed',
+        );
+      }
+      if (kickError) {
+        logger.warn(
+          { jobId: data.jobId, sourceGroup, kickError },
+          'Background job accepted, but the immediate supervisor pass reported an error',
+        );
+      }
+      try {
+        syncJobSnapshotsForGroups(registeredGroups);
+      } catch (err) {
+        logger.error(
+          { err, jobId: data.jobId, sourceGroup },
+          'Background job accepted, but snapshot sync failed',
+        );
+      }
+      logger.info(
+        { jobId: data.jobId, sourceGroup, targetFolder: targetGroupEntry.folder },
+        'Background job queued via IPC',
+      );
+      break;
+    }
+
+    case 'cancel_job': {
+      if (!data.jobId) break;
+      const job = getJobById(data.jobId);
+      if (!job) {
+        logger.warn({ jobId: data.jobId }, 'Cancel requested for missing job');
+        break;
+      }
+      if (!isMain && job.group_folder !== sourceGroup) {
+        logger.warn(
+          { jobId: data.jobId, sourceGroup },
+          'Unauthorized cancel_job attempt blocked',
+        );
+        break;
+      }
+      cancelBackgroundJob(data.jobId);
+      syncJobSnapshotsForGroups(registeredGroups);
+      logger.info({ jobId: data.jobId, sourceGroup }, 'Background job cancelled via IPC');
+      break;
+    }
+
+    case 'restart_job': {
+      if (!data.jobId) break;
+      const job = getJobById(data.jobId);
+      if (!job) {
+        logger.warn({ jobId: data.jobId }, 'Restart requested for missing job');
+        break;
+      }
+      if (!isMain && job.group_folder !== sourceGroup) {
+        logger.warn(
+          { jobId: data.jobId, sourceGroup },
+          'Unauthorized restart_job attempt blocked',
+        );
+        break;
+      }
+      restartBackgroundJob(data.jobId);
+      try {
+        await kickJobSupervisorNow();
+      } catch (err) {
+        logger.error(
+          { err, jobId: data.jobId, sourceGroup },
+          'Immediate supervisor pass after restart failed',
+        );
+      }
+      syncJobSnapshotsForGroups(registeredGroups);
+      logger.info({ jobId: data.jobId, sourceGroup }, 'Background job restart requested via IPC');
+      break;
+    }
+
+    default:
+      logger.warn({ type: data.type }, 'Unknown IPC job type');
   }
 }

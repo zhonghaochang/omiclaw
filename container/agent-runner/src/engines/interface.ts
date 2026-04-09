@@ -4,7 +4,7 @@
  */
 
 export interface ContainerOutput {
-  status: 'success' | 'error';
+  status: 'progress' | 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;

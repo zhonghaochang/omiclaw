@@ -1,0 +1,23 @@
+feature_name	variant_type	method	description	literature_source
+th2_th1_ratio	cell_ratio	Th2 cell type score divided by Th1 cell type score from NanoString nSolver; MCP-counter with the same signatures in METABRIC-TNBC	TNBC冷肿瘤中偏高的Th2相对Th1极化程度，提示type 2 immunity主导并与免疫排斥及CAF/TsRpM轴相关	39366933
+t_cell_score_stroma	cell_fraction	MCP-counter T-cell abundance score from microdissected stromal transcriptomes	TNBC微切割基质区T细胞丰度，hot肿瘤更高，代表免疫浸润程度	39366933
+cd8_tcell_score_stroma	cell_fraction	MCP-counter CD8+ T-cell abundance score from microdissected stromal transcriptomes	TNBC微切割基质区CD8 T细胞丰度，hot肿瘤更高，反映细胞毒性浸润	39366933
+caf_score_stroma	cell_fraction	MCP-counter CAF abundance score from microdissected stromal transcriptomes	TNBC微切割基质区CAF丰度，cold肿瘤更高，提示基质屏障和免疫排斥	39366933
+ctl_level_score	cytolytic_activity	average expression of CD8A, CD8B, GZMA, GZMB and PRF1	TNBC bulk样本中的CTL水平，用于表征细胞毒T淋巴细胞压力并支持TIDE样免疫逃逸分析	32790115
+fibro_subtype_frac_icaf	cell_fraction	cell proportion from scRNA-seq stromal subcluster annotations	TNBC单细胞中iCAF所占比例；iCAF状态与CTL dysfunction和免疫逃逸相关	32790115
+dpvl_signature_score	composite_signature	correlation score between bulk tumor transcriptome and the differentiated-PVL single-cell signature defined by averaged cluster expression over averaged stromal-cell expression	TNBC bulk样本对dPVL样基质程序的相似度；更高时提示CTL exclusion和免疫冷表型	32790115
+treg_frac	cell_fraction	cell proportion from scRNA-seq immune cluster annotations	TNBC免疫细胞中Treg所占比例，提示免疫抑制增强和冷肿瘤倾向	37158690
+exhausted_cd8_frac	cell_fraction	cell proportion from scRNA-seq T-cell cluster annotations	TNBC免疫细胞中耗竭CD8 T细胞比例升高，反映抑制性免疫微环境	37158690
+plasma_cell_frac	cell_fraction	cell proportion from scRNA-seq B-cell cluster annotations	TNBC免疫细胞中浆细胞比例，提示B细胞向浆细胞分化和体液免疫/TLS样活性	37158690
+nk_cytotoxic_frac	cell_fraction	cell proportion from scRNA-seq NK-cell cluster annotations	TNBC中cytotoxic NK比例较高，反映先天细胞毒免疫活性	37158690
+ighg1_expression	gene_expression	DESeq2-normalized bulk RNA-seq expression of IGHG1 from pretreatment biopsy	治疗前TNBC活检中IGHG1表达量；IGHG1高与B/Tfh富集、持久获益和更长OS相关	37882661
+cd274_expression	gene_expression	RNA-seq percentile rank of the PD-L1/CD274 transcript against a 735-solid-tumor reference population	治疗前TNBC样本PD-L1/CD274 RNA表达，较高时更倾向于neoadjuvant chemo-immunotherapy获得pCR	38793063
+lck_expression	gene_expression	RNA-seq percentile rank of the LCK transcript against a 735-solid-tumor reference population	治疗前TNBC样本LCK表达，较高时与neoadjuvant chemo-immunotherapy的pCR相关	38793063
+cd8_tex_frac	cell_fraction	relative contribution of the annotated CD8 TEX phenotype within pretreatment scRNA-seq T cells	治疗前PD1+ effector/exhaustion样CD8 TEX比例，升高时支持anti-PD1后T细胞克隆扩增	33958794
+cd8_cytotoxicity_score	cytolytic_activity	Seurat AddModuleScore of PRF1, GZMB, GZMA, IFNG, NKG7 and GNLY, averaged per patient	治疗前肿瘤CD8细胞毒程序强度，预测anti-PD1后T细胞扩增和更inflamed的应答状态	33958794
+ifng_response_score	pathway_activity	Seurat AddModuleScore of HALLMARK_INTERFERON_GAMMA_RESPONSE, averaged per patient	治疗前肿瘤IFN-gamma应答活性，关联anti-PD1后T细胞扩增和应答	33958794
+tcell_immune_checkpoint_score	gene_set_expression	Seurat AddModuleScore of CTLA4, PDCD1, HAVCR2, ENTPD1, TIGIT, LAG3 and BTLA, averaged per patient	治疗前T细胞检查点程序强度，反映已激活/耗竭但可被PD-1阻断再激活的状态	33958794
+cd4_th1_activity_score	program_score	Seurat AddModuleScore of a CD4+ TH1-activity signature derived from genes upregulated at least 2.5 logFC in TH1-like T cells, averaged per patient	治疗前CD4 Th1样程序强度，提示免疫hot并与anti-PD1后T细胞扩增相关	33958794
+mregdc_frac	cell_fraction	relative contribution of PD-L1/L2-high immunoregulatory dendritic cells in pretreatment scRNA-seq biopsies	治疗前PD-L1高表达免疫调节性树突细胞比例，和anti-PD1后T细胞扩增正相关	33958794
+cx3cr1_c3_macrophage_frac	cell_fraction	relative contribution of the CX3CR1+/C3+ macrophage phenotype in pretreatment scRNA-seq biopsies	治疗前CX3CR1+/C3+抑制性巨噬细胞比例，和anti-PD1后T细胞扩增负相关，提示耐药/免疫冷	33958794
+tcf7_gzmk_tcell_frac	cell_fraction	relative contribution of TCF7+/GZMK+ pre-effector/memory T cells within pretreatment scRNA-seq T cells	治疗前TCF7+/GZMK+ pre-effector/memory T细胞比例较高时，提示anti-PD1后扩增不足和较弱应答	33958794

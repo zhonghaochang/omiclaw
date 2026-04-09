@@ -78,6 +78,46 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export interface BackgroundJob {
+  id: string;
+  group_folder: string;
+  chat_jid: string;
+  title: string;
+  command: string;
+  cwd: string;
+  env_json: string | null;
+  status:
+    | 'queued'
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+    | 'stuck'
+    | 'cancelled';
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  pid: number | null;
+  pgid: number | null;
+  log_path: string | null;
+  heartbeat_path: string | null;
+  exit_path: string | null;
+  last_heartbeat_at: string | null;
+  restart_count: number;
+  max_restarts: number;
+  stale_after_ms: number | null;
+  notify_on_finish: number;
+  last_error: string | null;
+  metadata_json: string | null;
+}
+
+export interface JobEvent {
+  job_id: string;
+  timestamp: string;
+  level: 'info' | 'warn' | 'error';
+  message: string;
+  data_json: string | null;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {

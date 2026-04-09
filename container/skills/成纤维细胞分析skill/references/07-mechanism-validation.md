@@ -1,135 +1,100 @@
 ---
 name: 07-mechanism-validation
-description: Section 7：独立队列机制反证。在治疗后队列（GSE241934 NSCLC）中验证 Section 6 发现的关键 CAF 特征，完成基线→治疗后的逻辑闭环。
+description: Section 7：机制验证。对 GSE241934 的 IIT 与 RWC 分 cohort 检查注释与 patient-level 特征，支持 valid 或 blocked 的机制结论。
 type: reference
 ---
 
-# Section 7：独立队列机制反证（Post-Treatment Mechanism Validation）
+# Section 7：机制验证
 
 ## 概述
 
 | 项 | 说明 |
 |---|---|
-| **读入** | 治疗后数据集（GSE241934）+ Section 6 找出的"最重要 CAF 罪魁祸首"特征 |
-| **处理** | 在肺癌的治疗后样本中，直接对比有效（MPR）和无效（non-MPR）患者的关键 CAF 特征 |
-| **输出** | 机制验证小提琴图，完成"基线找出的老大，在治疗后依然是决定生死的关键"这一逻辑闭环 |
+| 读入 | GSE241934 治疗后队列、Section 6 关键 CAF 特征、Section 3 注释结果 |
+| 处理 | cohort-level validity check -> patient-level 特征计算 -> MPR vs non-MPR 对比或 blocked 诊断 |
+| 输出 | `mechanism_validation_stats.tsv` 或 `mechanism_block_report.tsv`、`Fig_M8` 或 `Fig_M8b`、最终报告 |
 
 **前置依赖**：Section 6 完成
 
-## 科学逻辑
+## 核心原则
 
-Section 5-6 在基线队列中通过 LODO + SHAP + 消融证明了某些 CAF 特征是预测 R/NR 最重要的因子。但这只说明了"治疗前的 CAF 状态能预测结果"。
+Section 7 不再默认追求“闭环成立”，而是先判断**能不能做有效机制验证**。
 
-Section 7 要回答的问题是：**这些关键特征在一个完全独立的、治疗后的队列中是否仍然与疗效显著相关？**
+正式规则：
+- IIT 和 RWC 先分别评估
+- 任一 cohort 的注释失败或关键特征全 NA，就不能直接做 combined inference
+- blocked 时必须留下明确诊断，而不是伪造成功统计表
 
-如果是——"基线找出的老大，在治疗后依然是决定生死的关键"——则建立了完整的因果链闭环。
+## Cohort-level validity check
 
-## 验证队列：GSE241934（NSCLC）
+对 IIT 与 RWC 分别检查：
+- `Cell_Subtype` 是否有效
+- `Major_CellType` 是否有效
+- patient-level 聚合是否完成
+- 关键机制特征是否存在非 NA 值
+- unresolved 比例是否过高
 
-- **IIT 队列**（18 例）：CTONG2104/NEOTIDE 临床试验，EGFR 突变的 NSCLC
-  - 应答分类：Immune sensitive / Moderate response / Highly resistant
-- **RWC 队列**（34 例）：真实世界队列，多种 PD-1 抗体
-  - 应答分类：pCR / MPR / non-MPR
+若任一检查失败：
+- 该 cohort 标记为 `blocked_for_mechanism`
+- 写入阻断原因、样本数、缺失特征比例
 
-所有样本都是**治疗后手术切除标本**的单细胞测序，这也是它们不能进入基线主模型的原因。
+## 有效时的统计流程
 
-## 处理流程
+若 cohort 有效，则：
+1. 在 GSE241934 的原始归一化矩阵上计算关键 CAF 程序分数
+2. 聚合到 patient-level
+3. 按 MPR / non-MPR 或等价分类分组
+4. 进行 Mann-Whitney U test / Wilcoxon rank-sum test
+5. 绘制 violin + jitter，并标注 n 与 p 值
 
-### Step 1：确认关键特征
+## Blocked 流程
 
-从 Section 6 的输出中提取：
-- `Table_M5_SHAP_CAF_ranking.tsv` 中排名前 N 的 CAF 特征
-- `Fig_M6` 消融实验中 AUC 下降最大的特征类别
+若任一 cohort 无法支持正式比较，则：
+- combined inference 必须 blocked
+- 输出 `mechanism_block_report.tsv`
+- 输出 `Fig_M8b_mechanism_block_diagnostic`
+- `analysis_summary.md` 必须写明 blocked 原因，不能把 blocked 包装成阴性结果
 
-### Step 2：在治疗后队列中计算这些特征
+## 最终报告要求
 
-1. 读取 GSE241934 的 IIT 和 RWC 的表达矩阵（已在 Section 1 QC'd）
-2. 使用 Section 3 的全局注释结果中对应的 `Cell_Subtype` 标签
-3. 在 GSE241934 的**原始归一化矩阵**上，独立计算关键 CAF 程序分数（`myoCAF_score`、`iCAF_score` 等）
-4. 聚合到患者级
+`analysis_summary.md`、`methods.md`、`figure_legend.md` 必须支持三种状态：
+- `valid`
+- `weak_evidence`
+- `blocked`
 
-### Step 3：对比 MPR vs non-MPR
+其中 Section 7 至少要把以下内容说清楚：
+- 哪些 cohort 有效
+- 哪些 cohort blocked
+- blocked 的具体原因
+- 若做了统计，效应方向与显著性如何
 
-对每个关键 CAF 特征：
-1. 按 MPR / non-MPR 分组
-2. 计算统计显著性（Wilcoxon rank-sum test 或 Mann-Whitney U test）
-3. 绘制小提琴图 + 散点叠加，标注 n 值和 p 值
+## 强制作图
 
-### Step 4：逻辑闭环判定
-
-如果关键 CAF 特征（例如 `myoCAF_score`）在 non-MPR 组中显著高于 MPR 组：
-- **闭环成立**："治疗前 myoCAF 高→预测无效"（基线模型）+ "治疗后 myoCAF 仍然高→实际无效"（机制验证）
-- 说明 CAF 的免疫抑制作用不仅是基线的预测信号，而且在治疗后仍持续存在
-
-如果不显著：
-- 需要讨论可能原因（癌种差异、样本量不足、治疗后微环境重塑等）
-- 不得隐瞒阴性结果
-
-## 最终报告结构
-
-分四个模块报告：
-
-**模块一 — 队列设置**
-- 每个数据集的病人数量、R:NR 比例
-- 癌种和治疗分布
-- 排除病人数和原因
-
-**模块二 — 模型性能**
-- 每个 LODO fold 的 ROC AUC / PR AUC
-- 校准摘要
-- near-random fold 标注
-
-**模块三 — 稳定成纤维细胞特征**
-- 通过全部四个重要性条件的特征
-- 系数方向和量级
-- 相对于免疫模型的边际 AUC 贡献
-
-**模块四 — 机制解释**
-- iCAF vs myoCAF 平衡及其与应答的关联
-- apCAF 与 CD4/Treg 轴
-- iCAF–mregDC 互作轴
-- NK 细胞毒性状态与应答
-- **治疗后队列闭环验证结果**
-- 局限性和下一步建议
-
-## 实时进度推送要求
-
-| 推送点 | 最低内容 |
+| 图名 | 目的 |
 |---|---|
-| 任务启动 | 分析计划、预期阶段 |
-| 数据加载 + Manifest | 每队列样本数、R:NR 分布 |
-| QC 完成 | 每队列保留率 |
-| 注释完成 | 检出细胞类型、零覆盖亚型 |
-| 特征完成 | 特征总数、门控后通过数 |
-| 建模完成 | LODO fold AUC、top 特征 |
-| 归因完成 | SHAP top 5、消融 delta、拮抗分析结论 |
-| 机制验证完成 | MPR vs non-MPR 的关键统计结果 |
-| 最终总结 | 科学结论、效应方向/强度、局限性、下一步 |
+| `Fig_M8_mechanism_validation_violin` | 有效时展示关键 CAF 特征在 MPR vs non-MPR 的分布 |
+| `Fig_M8b_mechanism_block_diagnostic` | blocked 时展示 cohort 可用样本数、缺失特征比例、注释失败原因 |
 
-**推送原则：**
-- 每条推送必须包含具体数字
-- 发现异常时立即推送
-- 最终推送必须是科学结论，不是文件列表
+每张图都必须同步交付：`pdf`、`png`、`*_source_data.tsv`、`*_caption.md`
 
-## Deliverables（交付物清单）
+## Deliverables
 
 | 交付物 | 路径 |
 |---|---|
-| 机制验证特征表 | `work/mechanism/GSE241934_mechanism_features.tsv` |
-| MPR vs non-MPR 统计表 | `work/mechanism/mechanism_validation_stats.tsv` |
-| 机制验证小提琴图 | `work/figures/main/Fig_M8_mechanism_validation_violin.pdf` |
+| 机制特征表 | `work/mechanism/GSE241934_mechanism_features.tsv` |
+| 机制统计表 | `work/mechanism/mechanism_validation_stats.tsv` |
+| blocked 报告 | `work/mechanism/mechanism_block_report.tsv` |
+| 机制验证图 | `work/figures/main/Fig_M8_mechanism_validation_violin.pdf` |
+| blocked 诊断图 | `work/figures/main/Fig_M8b_mechanism_block_diagnostic.pdf` |
 | 最终分析报告 | `work/reports/analysis_summary.md` |
 | 方法说明 | `work/reports/methods.md` |
 | 图注 | `work/reports/figure_legend.md` |
 | 全局过程索引 | `work/process_index.tsv` |
 
-### 完成检查
+## 完成检查
 
-- [ ] GSE241934 的关键 CAF 特征已在原始矩阵上独立计算
-- [ ] MPR vs non-MPR 对比统计已完成（含 p 值）
-- [ ] 机制验证小提琴图已生成
-- [ ] analysis_summary.md 包含完整科学结论和局限性
-- [ ] methods.md 和 figure_legend.md 非占位文本
-- [ ] 全部主图（Fig_S2, S3, M4, M5, M6, M7, M8）均已交付
-
-**全部 Section 完成。向用户发送最终科学总结。**
+- [ ] IIT 与 RWC 都已做 validity check
+- [ ] 若任一 cohort blocked，已生成 `mechanism_block_report.tsv`
+- [ ] 若做了统计，patient-level 特征已在原始矩阵上独立计算
+- [ ] `Fig_M8` 或 `Fig_M8b` 至少其一已生成
+- [ ] `analysis_summary.md`、`methods.md`、`figure_legend.md` 不是占位文本

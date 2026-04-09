@@ -113,15 +113,19 @@ export function ensureImageAvailable(): void {
 
 /** Kill orphaned host agent processes from previous runs. */
 export function cleanupOrphans(): void {
-  try {
-    execSync(
-      `pkill -f ${JSON.stringify(
-        'container/agent-runner/dist/index.js --agent-name omiclaw-',
-      )}`,
-      { stdio: 'ignore' },
-    );
-  } catch {
-    // No orphan processes found.
+  const patterns = [
+    'container/agent-runner/dist/index.js --agent-name omiclaw-',
+    'container/agent-runner/src/index.ts --agent-name omiclaw-',
+  ];
+
+  for (const pattern of patterns) {
+    try {
+      execSync(`pkill -f ${JSON.stringify(pattern)}`, {
+        stdio: 'ignore',
+      });
+    } catch {
+      // No orphan processes found for this pattern.
+    }
   }
   runtimeProcesses.clear();
 }

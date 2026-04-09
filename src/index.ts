@@ -27,6 +27,8 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeHostStatusSnapshot,
+  writeJobsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import { startDashboard } from './web/server.js';
@@ -41,6 +43,7 @@ import {
   createWebChatThread,
   deleteWebChatThread,
   getAllChats,
+  getAllJobs,
   getAllRegisteredGroups,
   deleteSession,
   getAllSessions,
@@ -63,6 +66,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { startJobSupervisorLoop } from './job-manager.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   isSenderAllowed,
@@ -71,7 +75,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { BackgroundJob, Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { setWebChatActiveThread } from './channels/web.js';
 
@@ -89,6 +93,7 @@ const channels: Channel[] = [];
 const queue = new GroupQueue();
 const WEB_CHAT_FOLDER = 'web_chat';
 const WEB_CHAT_JID = 'web:chat';
+const HOST_STARTED_AT = new Date().toISOString();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -155,6 +160,102 @@ function getAgentCursorKey(chatJid: string, threadId?: string): string {
   return chatJid;
 }
 
+function resolveLiveLogPath(groupFolder: string): string | null {
+  const logsDir = path.join(resolveGroupFolderPath(groupFolder), 'logs');
+  const candidates = ['agent-live.log', 'container-live.log'];
+  for (const name of candidates) {
+    const candidate = path.join(logsDir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function enqueueJobRecoveryTurn(
+  job: BackgroundJob,
+  prompt: string,
+): Promise<boolean> {
+  const group = Object.values(registeredGroups).find(
+    (candidate) => candidate.folder === job.group_folder,
+  );
+  if (!group) {
+    logger.warn(
+      { jobId: job.id, groupFolder: job.group_folder },
+      'Cannot queue recovery turn: group not found',
+    );
+    return false;
+  }
+
+  const channel = findChannel(channels, job.chat_jid);
+  if (!channel) {
+    logger.warn(
+      { jobId: job.id, chatJid: job.chat_jid },
+      'Cannot queue recovery turn: channel not found',
+    );
+    return false;
+  }
+
+  const recoveryTaskId = `job-recovery-${job.id}-${Date.now()}`;
+  queue.enqueueTask(job.chat_jid, recoveryTaskId, async () => {
+    const RECOVERY_CLOSE_DELAY_MS = 10000;
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    let hadError = false;
+
+    const scheduleClose = () => {
+      if (closeTimer) return;
+      closeTimer = setTimeout(() => {
+        logger.debug({ jobId: job.id }, 'Closing recovery turn after result');
+        queue.closeStdin(job.chat_jid);
+      }, RECOVERY_CLOSE_DELAY_MS);
+    };
+
+    await channel.setTyping?.(job.chat_jid, true);
+    try {
+      const outcome = await runAgent(group, prompt, job.chat_jid, async (result) => {
+        if (result.result) {
+          const raw =
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result);
+          const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+          logger.info(
+            { jobId: job.id, group: group.name },
+            `Recovery output: ${raw.slice(0, 200)}`,
+          );
+          if (text) {
+            await channel.sendMessage(job.chat_jid, text);
+            scheduleClose();
+          }
+        }
+
+        if (result.status === 'success') {
+          queue.notifyIdle(job.chat_jid);
+          scheduleClose();
+        }
+
+        if (result.status === 'error') {
+          hadError = true;
+        }
+      });
+
+      if (outcome === 'error' || hadError) {
+        logger.warn(
+          { jobId: job.id, group: group.name },
+          'Recovery turn ended with error',
+        );
+      }
+    } finally {
+      await channel.setTyping?.(job.chat_jid, false);
+      if (closeTimer) clearTimeout(closeTimer);
+    }
+  });
+
+  logger.info(
+    { jobId: job.id, recoveryTaskId, group: group.name },
+    'Queued autonomous recovery turn',
+  );
+  return true;
+}
+
 function deleteAndReplaceWebChatThread(threadId: string):
   | {
       deletedThreadId: string;
@@ -209,11 +310,39 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  writeHostStatusSnapshot(group.folder, {
+    status: 'running',
+    pid: process.pid,
+    started_at: HOST_STARTED_AT,
+    heartbeat_at: new Date().toISOString(),
+  });
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
     'Group registered',
   );
+}
+
+function refreshHostStatusSnapshots(
+  status: 'running' | 'stopped' = 'running',
+): void {
+  const snapshot = {
+    status,
+    pid: process.pid,
+    started_at: HOST_STARTED_AT,
+    heartbeat_at: new Date().toISOString(),
+  };
+
+  for (const group of Object.values(registeredGroups)) {
+    try {
+      writeHostStatusSnapshot(group.folder, snapshot);
+    } catch (err) {
+      logger.warn(
+        { err, groupFolder: group.folder },
+        'Failed to write host status snapshot',
+      );
+    }
+  }
 }
 
 /**
@@ -276,15 +405,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     lastAgentTimestamp[cursorKey] =
       missedMessages[missedMessages.length - 1].timestamp;
     saveState();
-    // Read tail of container-live.log and extract recent activity
-    const liveLogPath = path.join(
-      DATA_DIR,
-      'groups',
-      group.folder,
-      'logs',
-      'container-live.log',
-    );
-    if (!fs.existsSync(liveLogPath)) {
+    const liveLogPath = resolveLiveLogPath(group.folder);
+    if (!liveLogPath || !fs.existsSync(liveLogPath)) {
       if (channel) await channel.sendMessage(chatJid, 'No agent activity yet.');
       return true;
     }
@@ -582,6 +704,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
+    if (queue.isSessionCleared(chatJid)) {
+      logger.info(
+        { group: group.name },
+        'Dropping residual output from cleared session',
+      );
+      return;
+    }
+
     if (result.result) {
       const raw =
         typeof result.result === 'string'
@@ -609,6 +739,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+
+  if (queue.isSessionCleared(chatJid)) {
+    logger.info(
+      { group: group.name },
+      'Session was cleared during agent run; skipping residual completion handling',
+    );
+    return true;
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -655,6 +793,33 @@ async function runAgent(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+    })),
+  );
+
+  const jobs = getAllJobs();
+  writeJobsSnapshot(
+    group.folder,
+    isMain,
+    jobs.map((j) => ({
+      id: j.id,
+      groupFolder: j.group_folder,
+      chatJid: j.chat_jid,
+      title: j.title,
+      command: j.command,
+      cwd: j.cwd,
+      status: j.status,
+      created_at: j.created_at,
+      started_at: j.started_at,
+      finished_at: j.finished_at,
+      pid: j.pid,
+      log_path: j.log_path,
+      heartbeat_path: j.heartbeat_path,
+      exit_path: j.exit_path,
+      last_heartbeat_at: j.last_heartbeat_at,
+      restart_count: j.restart_count,
+      max_restarts: j.max_restarts,
+      stale_after_ms: j.stale_after_ms,
+      last_error: j.last_error,
     })),
   );
 
@@ -762,16 +927,19 @@ async function handleControlCommand(
   }
 
   if (/^\/new\b/i.test(lastMsg)) {
+    queue.markSessionCleared(chatJid);
+
     // Stop running container first
     const state = queue.getState(chatJid);
     if (state?.active && state.process) {
-      // Mark session cleared BEFORE killing — prevents the dying container's
-      // output callbacks from re-saving the old session ID, and blocks
-      // sendMessage() from piping new messages to the old container.
-      queue.markSessionCleared(chatJid);
       state.process.kill('SIGTERM');
       if (state.containerName) killContainer(state.containerName);
       logger.info({ group: group.name }, 'Agent stopped for /new command');
+    } else if (state?.active) {
+      logger.warn(
+        { group: group.name },
+        'Session reset found active queue state without a live process',
+      );
     }
     if (sessions[group.folder]) {
       previousSessions[group.folder] = sessions[group.folder];
@@ -791,14 +959,8 @@ async function handleControlCommand(
   if (/^\/watch\b/i.test(lastMsg)) {
     lastAgentTimestamp[cursorKey] = messages[messages.length - 1].timestamp;
     saveState();
-    const liveLogPath = path.join(
-      DATA_DIR,
-      'groups',
-      group.folder,
-      'logs',
-      'container-live.log',
-    );
-    if (!fs.existsSync(liveLogPath)) {
+    const liveLogPath = resolveLiveLogPath(group.folder);
+    if (!liveLogPath || !fs.existsSync(liveLogPath)) {
       await channel.sendMessage(chatJid, 'No agent activity yet.');
       return true;
     }
@@ -1242,6 +1404,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    refreshHostStatusSnapshots('stopped');
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -1318,6 +1481,19 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
+  startJobSupervisorLoop({
+    registeredGroups: () => registeredGroups,
+    sendMessage: async (jid, rawText) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'No channel owns JID, cannot send job update');
+        return;
+      }
+      const text = formatOutbound(rawText);
+      if (text) await channel.sendMessage(jid, text);
+    },
+    enqueueRecoveryTurn: (job, prompt) => enqueueJobRecoveryTurn(job, prompt),
+  });
   startIpcWatcher({
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
@@ -1337,6 +1513,9 @@ async function main(): Promise<void> {
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
   });
+  refreshHostStatusSnapshots();
+  const hostStatusTimer = setInterval(refreshHostStatusSnapshots, 5000);
+  hostStatusTimer.unref?.();
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

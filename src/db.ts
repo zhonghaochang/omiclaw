@@ -6,6 +6,8 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  BackgroundJob,
+  JobEvent,
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
@@ -77,6 +79,47 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
+
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      title TEXT NOT NULL,
+      command TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      env_json TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      pid INTEGER,
+      pgid INTEGER,
+      log_path TEXT,
+      heartbeat_path TEXT,
+      exit_path TEXT,
+      last_heartbeat_at TEXT,
+      restart_count INTEGER DEFAULT 0,
+      max_restarts INTEGER DEFAULT 0,
+      stale_after_ms INTEGER,
+      notify_on_finish INTEGER DEFAULT 1,
+      last_error TEXT,
+      metadata_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_jobs_group_folder ON jobs(group_folder);
+    CREATE INDEX IF NOT EXISTS idx_jobs_chat_jid ON jobs(chat_jid);
+    CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
+
+    CREATE TABLE IF NOT EXISTS job_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      level TEXT NOT NULL,
+      message TEXT NOT NULL,
+      data_json TEXT,
+      FOREIGN KEY (job_id) REFERENCES jobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, timestamp);
 
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
@@ -582,6 +625,151 @@ export function logTaskRun(log: TaskRunLog): void {
     log.result,
     log.error,
   );
+}
+
+export function createJob(job: BackgroundJob): void {
+  db.prepare(
+    `
+    INSERT INTO jobs (
+      id, group_folder, chat_jid, title, command, cwd, env_json, status,
+      created_at, started_at, finished_at, pid, pgid, log_path, heartbeat_path,
+      exit_path, last_heartbeat_at, restart_count, max_restarts, stale_after_ms,
+      notify_on_finish, last_error, metadata_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    job.id,
+    job.group_folder,
+    job.chat_jid,
+    job.title,
+    job.command,
+    job.cwd,
+    job.env_json,
+    job.status,
+    job.created_at,
+    job.started_at,
+    job.finished_at,
+    job.pid,
+    job.pgid,
+    job.log_path,
+    job.heartbeat_path,
+    job.exit_path,
+    job.last_heartbeat_at,
+    job.restart_count,
+    job.max_restarts,
+    job.stale_after_ms,
+    job.notify_on_finish,
+    job.last_error,
+    job.metadata_json,
+  );
+}
+
+export function getJobById(id: string): BackgroundJob | undefined {
+  return db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as
+    | BackgroundJob
+    | undefined;
+}
+
+export function getJobsForGroup(groupFolder: string): BackgroundJob[] {
+  return db
+    .prepare('SELECT * FROM jobs WHERE group_folder = ? ORDER BY created_at DESC')
+    .all(groupFolder) as BackgroundJob[];
+}
+
+export function getAllJobs(): BackgroundJob[] {
+  return db
+    .prepare('SELECT * FROM jobs ORDER BY created_at DESC')
+    .all() as BackgroundJob[];
+}
+
+export function getJobsByStatus(statuses: BackgroundJob['status'][]): BackgroundJob[] {
+  if (statuses.length === 0) return [];
+  const placeholders = statuses.map(() => '?').join(', ');
+  return db
+    .prepare(`SELECT * FROM jobs WHERE status IN (${placeholders}) ORDER BY created_at DESC`)
+    .all(...statuses) as BackgroundJob[];
+}
+
+export function updateJob(
+  id: string,
+  updates: Partial<BackgroundJob>,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  const assign = (field: keyof BackgroundJob, value: unknown): void => {
+    fields.push(`${field} = ?`);
+    values.push(value);
+  };
+
+  if (updates.group_folder !== undefined) assign('group_folder', updates.group_folder);
+  if (updates.chat_jid !== undefined) assign('chat_jid', updates.chat_jid);
+  if (updates.title !== undefined) assign('title', updates.title);
+  if (updates.command !== undefined) assign('command', updates.command);
+  if (updates.cwd !== undefined) assign('cwd', updates.cwd);
+  if (updates.env_json !== undefined) assign('env_json', updates.env_json);
+  if (updates.status !== undefined) assign('status', updates.status);
+  if (updates.created_at !== undefined) assign('created_at', updates.created_at);
+  if (updates.started_at !== undefined) assign('started_at', updates.started_at);
+  if (updates.finished_at !== undefined) assign('finished_at', updates.finished_at);
+  if (updates.pid !== undefined) assign('pid', updates.pid);
+  if (updates.pgid !== undefined) assign('pgid', updates.pgid);
+  if (updates.log_path !== undefined) assign('log_path', updates.log_path);
+  if (updates.heartbeat_path !== undefined)
+    assign('heartbeat_path', updates.heartbeat_path);
+  if (updates.exit_path !== undefined) assign('exit_path', updates.exit_path);
+  if (updates.last_heartbeat_at !== undefined)
+    assign('last_heartbeat_at', updates.last_heartbeat_at);
+  if (updates.restart_count !== undefined)
+    assign('restart_count', updates.restart_count);
+  if (updates.max_restarts !== undefined) assign('max_restarts', updates.max_restarts);
+  if (updates.stale_after_ms !== undefined)
+    assign('stale_after_ms', updates.stale_after_ms);
+  if (updates.notify_on_finish !== undefined)
+    assign('notify_on_finish', updates.notify_on_finish);
+  if (updates.last_error !== undefined) assign('last_error', updates.last_error);
+  if (updates.metadata_json !== undefined)
+    assign('metadata_json', updates.metadata_json);
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(`UPDATE jobs SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+}
+
+export function deleteJob(id: string): void {
+  db.prepare('DELETE FROM job_events WHERE job_id = ?').run(id);
+  db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+}
+
+export function logJobEvent(event: JobEvent): void {
+  db.prepare(
+    `
+    INSERT INTO job_events (job_id, timestamp, level, message, data_json)
+    VALUES (?, ?, ?, ?, ?)
+  `,
+  ).run(
+    event.job_id,
+    event.timestamp,
+    event.level,
+    event.message,
+    event.data_json,
+  );
+}
+
+export function getJobEvents(jobId: string, limit = 50): JobEvent[] {
+  return db
+    .prepare(
+      `
+      SELECT job_id, timestamp, level, message, data_json
+      FROM job_events
+      WHERE job_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `,
+    )
+    .all(jobId, limit) as JobEvent[];
 }
 
 // --- Router state accessors ---

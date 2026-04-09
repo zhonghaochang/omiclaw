@@ -211,6 +211,34 @@ describe('GroupQueue', () => {
     expect(callCount).toBe(countAfterMaxRetries);
   });
 
+  it('markSessionCleared releases stale active state without a live process', async () => {
+    let unblock: (() => void) | undefined;
+    const processMessages = vi.fn(
+      async () =>
+        await new Promise<boolean>((resolve) => {
+          unblock = () => resolve(true);
+        }),
+    );
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    const state = queue.getState('group1@g.us')!;
+    state.groupFolder = 'group1';
+    state.pendingMessages = true;
+    state.process = null;
+
+    queue.markSessionCleared('group1@g.us');
+
+    expect(state.sessionCleared).toBe(true);
+    expect(state.groupFolder).toBeNull();
+    expect(state.pendingMessages).toBe(false);
+    expect(state.active).toBe(false);
+
+    unblock?.();
+  });
+
   // --- Waiting groups get drained when slots free up ---
 
   it('drains waiting groups when active slots free up', async () => {

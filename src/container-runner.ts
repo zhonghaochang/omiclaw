@@ -47,7 +47,7 @@ export interface ContainerInput {
 }
 
 export interface ContainerOutput {
-  status: 'success' | 'error';
+  status: 'progress' | 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
@@ -60,10 +60,26 @@ export interface AvailableGroup {
   isRegistered: boolean;
 }
 
+export interface HostStatusSnapshot {
+  status: 'running' | 'stopped';
+  pid: number;
+  started_at: string;
+  heartbeat_at: string;
+}
+
 function mkdirWorld(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
   try {
     fs.chmodSync(dirPath, 0o777);
+  } catch {
+    /* best-effort */
+  }
+}
+
+function writeExecutable(filePath: string, content: string): void {
+  fs.writeFileSync(filePath, content, { mode: 0o755 });
+  try {
+    fs.chmodSync(filePath, 0o755);
   } catch {
     /* best-effort */
   }
@@ -115,6 +131,7 @@ interface RuntimePaths {
   groupDir: string;
   groupHomeDir: string;
   ipcDir: string;
+  policyShimsDir: string;
   extraBaseDir?: string;
 }
 
@@ -135,6 +152,26 @@ function syncSkills(groupClaudeDir: string): void {
   }
 }
 
+function preparePolicyShims(groupHomeDir: string): string {
+  const shimsDir = path.join(groupHomeDir, '.omiclaw-bin');
+  mkdirWorld(shimsDir);
+
+  for (const tool of ['nohup', 'setsid']) {
+    writeExecutable(
+      path.join(shimsDir, tool),
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        `echo "OmiClaw policy: ${tool} is blocked for durable long-running work. Use mcp__omiclaw__start_job instead." >&2`,
+        'exit 64',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  return shimsDir;
+}
+
 function prepareRuntimePaths(
   group: RegisteredGroup,
   isMain: boolean,
@@ -144,6 +181,7 @@ function prepareRuntimePaths(
   mkdirWorld(groupDir);
 
   const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder);
+  const policyShimsDir = preparePolicyShims(groupHomeDir);
   const groupClaudeDir = path.join(groupHomeDir, '.claude');
   mkdirWorld(groupClaudeDir);
   mkdirWorld(path.join(groupClaudeDir, 'debug'));
@@ -214,7 +252,7 @@ function prepareRuntimePaths(
     }
   }
 
-  return { groupDir, groupHomeDir, ipcDir, extraBaseDir };
+  return { groupDir, groupHomeDir, ipcDir, policyShimsDir, extraBaseDir };
 }
 
 function getRunnerCommand(agentName: string): { command: string; args: string[] } {
@@ -287,7 +325,7 @@ export async function runContainerAgent(
         HOME: runtimePaths.groupHomeDir,
         AGENT_ENGINE: engine,
         ...(model ? { AGENT_MODEL: model } : {}),
-        PATH: `${path.join(CONDA_ENV_PATH, 'bin')}:${process.env.PATH || ''}`,
+        PATH: `${runtimePaths.policyShimsDir}:${path.join(CONDA_ENV_PATH, 'bin')}:${process.env.PATH || ''}`,
         CONDA_PREFIX: CONDA_ENV_PATH,
         OMICLAW_WORKSPACE_GROUP: runtimePaths.groupDir,
         OMICLAW_WORKSPACE_GLOBAL: path.join(GROUPS_DIR, 'global'),
@@ -565,6 +603,44 @@ export function writeTasksSnapshot(
   );
 }
 
+export function writeJobsSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  jobs: Array<{
+    id: string;
+    groupFolder: string;
+    chatJid: string;
+    title: string;
+    command: string;
+    cwd: string;
+    status: string;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    pid: number | null;
+    log_path: string | null;
+    heartbeat_path: string | null;
+    exit_path: string | null;
+    last_heartbeat_at: string | null;
+    restart_count: number;
+    max_restarts: number;
+    stale_after_ms: number | null;
+    last_error: string | null;
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const filteredJobs = isMain
+    ? jobs
+    : jobs.filter((j) => j.groupFolder === groupFolder);
+
+  fs.writeFileSync(
+    path.join(groupIpcDir, 'current_jobs.json'),
+    JSON.stringify(filteredJobs, null, 2),
+  );
+}
+
 export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
@@ -585,5 +661,17 @@ export function writeGroupsSnapshot(
       null,
       2,
     ),
+  );
+}
+
+export function writeHostStatusSnapshot(
+  groupFolder: string,
+  snapshot: HostStatusSnapshot,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(groupIpcDir, 'host_status.json'),
+    JSON.stringify(snapshot, null, 2),
   );
 }

@@ -1,13 +1,13 @@
 """Reference helpers for skill-aligned fibro primary modeling.
 
 This module is a normative template for generated scripts. It encodes the
-primary-model guardrails that were repeatedly violated in prior runs:
+current primary-model guardrails for the Harmony-only fibro/ICB workflow:
 
-1. Do not let the primary model learn dataset/context metadata.
-2. Do not let the primary model learn count-like technical proxies.
-3. Reconcile manifest -> patient features -> modeled table before fitting.
-4. Re-run LODO separately for each sensitivity scenario.
-5. Run an output-integrity gate after the pipeline finishes.
+1. The primary model is patient-level only.
+2. Route, provenance, merge-artifact, and count-like columns are forbidden.
+3. manifest -> fibro_features -> design_matrix must reconcile exactly.
+4. Every sensitivity scenario must rebuild its own design matrix and rerun LODO.
+5. Output integrity requires figure manifests and non-placeholder reports.
 """
 
 from __future__ import annotations
@@ -35,9 +35,26 @@ PRIMARY_META_COLS = {
     "subtype_unified",
     "treatment_group",
     "platform",
+    "include_main_analysis",
+    "include_mechanism_analysis",
+    "analysis_unit",
+    "sample_id",
+    "lesion_id",
+    "source_analysis_unit",
+    "source_sample_id",
+    "source_lesion_id",
 }
 
 FORBIDDEN_PRIMARY_FEATURES_EXACT = {
+    "include_main_analysis",
+    "include_mechanism_analysis",
+    "analysis_unit",
+    "sample_id",
+    "lesion_id",
+    "source_analysis_unit",
+    "source_sample_id",
+    "source_lesion_id",
+    "sample_id_main",
     "n_cells",
     "total_cells",
     "fibro_count",
@@ -56,11 +73,11 @@ FORBIDDEN_PRIMARY_PREFIXES = (
     "platform_",
     "response_tier_",
     "annotation_method_",
+    "include_",
+    "source_",
 )
 
-FORBIDDEN_PRIMARY_SUFFIXES = (
-    "_count",
-)
+FORBIDDEN_PRIMARY_SUFFIXES = ("_count",)
 
 PLACEHOLDER_PHRASES = (
     "methods are encoded in scripts/",
@@ -91,13 +108,66 @@ def _is_placeholder_text(text: str) -> bool:
     return any(phrase in normalized for phrase in PLACEHOLDER_PHRASES)
 
 
+def _as_bool(series: pd.Series) -> pd.Series:
+    lowered = series.astype(str).str.strip().str.lower()
+    return lowered.isin({"true", "1", "yes", "y"})
+
+
+def _has_merge_artifact(column: str) -> bool:
+    return column == "sample_id_main" or column.endswith("_x") or column.endswith("_y")
+
+
+def _assert_unique_keys(df: pd.DataFrame, name: str) -> None:
+    duplicated = df.duplicated(subset=["dataset_id", "patient_id"], keep=False)
+    if duplicated.any():
+        raise RuntimeError(f"ERROR: duplicate_patient_rows_in_{name}")
+
+
+def _validate_main_manifest_contract(manifest: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "dataset_id",
+        "patient_id",
+        "response_binary",
+        "include_main_analysis",
+        "analysis_unit",
+        "source_analysis_unit",
+        "source_sample_id",
+        "source_lesion_id",
+    }
+    missing = sorted(required.difference(manifest.columns))
+    if missing:
+        raise RuntimeError(f"ERROR: manifest_missing_required_columns::{','.join(missing)}")
+
+    main = manifest.loc[_as_bool(manifest["include_main_analysis"])].copy()
+    if main.empty:
+        raise RuntimeError("ERROR: no_main_manifest_rows")
+
+    if not main["analysis_unit"].astype(str).eq("patient").all():
+        raise RuntimeError("ERROR: main_analysis_not_patient_level")
+
+    _assert_unique_keys(main, "main_manifest")
+
+    src_unit = main["source_analysis_unit"].astype(str).str.strip()
+    if src_unit.eq("").any():
+        raise RuntimeError("ERROR: missing_main_route_source")
+
+    src_sample = main["source_sample_id"].astype(str).str.strip()
+    src_lesion = main["source_lesion_id"].astype(str).str.strip()
+    missing_source = src_sample.eq("") & src_lesion.eq("")
+    if missing_source.any():
+        raise RuntimeError("ERROR: missing_main_route_source")
+
+    return main.drop_duplicates(subset=["dataset_id", "patient_id"])
+
+
 def build_modeling_coverage_report(
     manifest: pd.DataFrame,
     patient_features: pd.DataFrame,
     modeled_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    main = manifest.loc[manifest["include_main_analysis"].fillna(False)].copy()
-    main = main.drop_duplicates(subset=["dataset_id", "patient_id"])
+    main = _validate_main_manifest_contract(manifest)
+    _assert_unique_keys(patient_features, "patient_features")
+    _assert_unique_keys(modeled_df, "modeled_df")
 
     coverage = (
         main.groupby("dataset_id")["patient_id"].nunique().rename("manifest_patients").to_frame()
@@ -112,28 +182,24 @@ def build_modeling_coverage_report(
         .fillna(0)
         .reset_index()
     )
+
     coverage["patient_feature_rows"] = coverage["patient_feature_rows"].astype(int)
     coverage["modeled_rows"] = coverage["modeled_rows"].astype(int)
-    coverage["loss_manifest_to_features"] = coverage["manifest_patients"] - coverage["patient_feature_rows"]
-    coverage["loss_features_to_modeled"] = coverage["patient_feature_rows"] - coverage["modeled_rows"]
     coverage["status"] = "ok"
 
+    for idx, row in coverage.iterrows():
+        if int(row["patient_feature_rows"]) != int(row["manifest_patients"]):
+            coverage.loc[idx, "status"] = "ERROR: dataset_feature_coverage_mismatch"
+        if int(row["modeled_rows"]) != int(row["manifest_patients"]):
+            coverage.loc[idx, "status"] = "ERROR: dataset_modeling_coverage_mismatch"
+
     total_manifest = int(coverage["manifest_patients"].sum())
+    total_feature = int(coverage["patient_feature_rows"].sum())
     total_modeled = int(coverage["modeled_rows"].sum())
     if total_manifest == 0:
         raise RuntimeError("ERROR: no_main_manifest_rows")
-    if total_modeled < 0.9 * total_manifest:
+    if total_feature != total_manifest or total_modeled != total_manifest:
         raise RuntimeError("ERROR: modeling_coverage_mismatch")
-
-    for idx, row in coverage.iterrows():
-        if row["manifest_patients"] == 0:
-            continue
-        feature_loss = row["loss_manifest_to_features"] / row["manifest_patients"]
-        if feature_loss > 0.20:
-            coverage.loc[idx, "status"] = "ERROR: dataset_feature_coverage_mismatch"
-        if int(row["modeled_rows"]) == 0:
-            coverage.loc[idx, "status"] = "ERROR: dropped_main_dataset_from_model"
-
     if coverage["status"].str.startswith("ERROR").any():
         raise RuntimeError("ERROR: modeling_coverage_mismatch")
     return coverage
@@ -143,23 +209,29 @@ def audit_primary_feature_candidates(
     modeled_df: pd.DataFrame,
     feature_gate_log: pd.DataFrame,
 ) -> pd.DataFrame:
-    blocked = set(
-        feature_gate_log.loc[
-            feature_gate_log["gate"].astype(str).str.startswith("GATE"),
-            "feature_name",
-        ].astype(str)
-    )
+    blocked = set()
+    if {"feature_name", "gate"}.issubset(feature_gate_log.columns):
+        blocked = set(
+            feature_gate_log.loc[
+                feature_gate_log["gate"].astype(str).str.startswith("GATE"),
+                "feature_name",
+            ].astype(str)
+        )
 
     rows = []
     for column in modeled_df.columns:
         reason = "use_in_primary"
         include = True
+
         if column in PRIMARY_META_COLS:
             include = False
             reason = "metadata"
         elif column in blocked:
             include = False
             reason = "feature_gate_blocked"
+        elif _has_merge_artifact(column):
+            include = False
+            reason = "merge_artifact"
         elif column in FORBIDDEN_PRIMARY_FEATURES_EXACT:
             include = False
             reason = "forbidden_exact"
@@ -192,7 +264,7 @@ def audit_primary_feature_candidates(
         & (
             audit["feature_name"].isin(FORBIDDEN_PRIMARY_FEATURES_EXACT)
             | audit["feature_name"].astype(str).str.startswith(FORBIDDEN_PRIMARY_PREFIXES)
-            | audit["feature_name"].astype(str).str.endswith(FORBIDDEN_PRIMARY_SUFFIXES)
+            | audit["feature_name"].astype(str).apply(_has_merge_artifact)
         )
     ]
     if not bad.empty:
@@ -205,24 +277,40 @@ def build_primary_design_matrix(
     manifest: pd.DataFrame,
     feature_gate_log: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str], pd.DataFrame, pd.DataFrame]:
-    main = manifest.loc[manifest["include_main_analysis"].fillna(False)].copy()
-    main = main.loc[main["response_binary"].isin(["Response", "Non-response"])].copy()
-    keep = main.drop_duplicates(subset=["dataset_id", "patient_id"])
+    main = _validate_main_manifest_contract(manifest)
+    _assert_unique_keys(patient_features, "patient_features")
+
+    patient_cols = set(patient_features.columns)
+    if any(_has_merge_artifact(column) for column in patient_cols):
+        raise RuntimeError("ERROR: forbidden_primary_feature")
+
+    if "include_main_analysis" in patient_cols and not _as_bool(patient_features["include_main_analysis"]).all():
+        raise RuntimeError("ERROR: forbidden_primary_feature")
+    if "include_mechanism_analysis" in patient_cols and _as_bool(patient_features["include_mechanism_analysis"]).any():
+        raise RuntimeError("ERROR: forbidden_primary_feature")
+    if "analysis_unit" in patient_cols and not patient_features["analysis_unit"].astype(str).eq("patient").all():
+        raise RuntimeError("ERROR: forbidden_primary_feature")
+
+    keep = main.loc[
+        main["response_binary"].isin(["Response", "Non-response"]),
+        [
+            "dataset_id",
+            "patient_id",
+            "response_binary",
+            "response_tier",
+            "cancer_context",
+            "annotation_method",
+        ],
+    ].drop_duplicates(subset=["dataset_id", "patient_id"])
 
     modeled_df = patient_features.merge(
-        keep[
-            [
-                "dataset_id",
-                "patient_id",
-                "response_binary",
-                "response_tier",
-                "cancer_context",
-                "annotation_method",
-            ]
-        ],
+        keep,
         on=["dataset_id", "patient_id"],
         how="inner",
+        validate="one_to_one",
     )
+    _assert_unique_keys(modeled_df, "modeled_df")
+
     coverage = build_modeling_coverage_report(main, patient_features, modeled_df)
     audit = audit_primary_feature_candidates(modeled_df, feature_gate_log)
     feature_cols = audit.loc[audit["include_in_primary"], "feature_name"].tolist()
@@ -340,6 +428,7 @@ def run_sensitivity_scenario(
     feature_cols: list[str],
     output_dir: Path,
 ) -> dict[str, object]:
+    _assert_unique_keys(scenario_df, f"sensitivity_{scenario_name}")
     fold_df, pred_df, assign_df = lodo_eval_primary(scenario_df, feature_cols)
     scenario_dir = output_dir / "sensitivity"
     write_tsv(fold_df, scenario_dir / f"{scenario_name}__fold_metrics.tsv")
@@ -354,7 +443,8 @@ def run_sensitivity_scenario(
 
 def validate_main_source_scope(source_df: pd.DataFrame, manifest: pd.DataFrame) -> None:
     main_keys = set(
-        manifest.loc[manifest["include_main_analysis"].fillna(False), ["dataset_id", "patient_id"]]
+        _validate_main_manifest_contract(manifest)
+        .loc[:, ["dataset_id", "patient_id"]]
         .drop_duplicates()
         .itertuples(index=False, name=None)
     )
@@ -376,6 +466,7 @@ def run_output_integrity_gate(run_dir: Path) -> pd.DataFrame:
     work_dir = run_dir / "work"
     reports_dir = work_dir / "reports"
     audit_dir = work_dir / "audit"
+    figures_dir = work_dir / "figures"
 
     pipeline_log = audit_dir / "run_pipeline.log"
     if not pipeline_log.exists() or pipeline_log.stat().st_size == 0:
@@ -383,7 +474,7 @@ def run_output_integrity_gate(run_dir: Path) -> pd.DataFrame:
     else:
         record("pipeline_log", "PASS", f"bytes={pipeline_log.stat().st_size}")
 
-    for name in ("methods.md", "figure_legend.md"):
+    for name in ("methods.md", "figure_legend.md", "analysis_summary.md"):
         path = reports_dir / name
         if not path.exists():
             record(name, "ERROR", "missing")
@@ -393,6 +484,13 @@ def run_output_integrity_gate(run_dir: Path) -> pd.DataFrame:
             record(name, "ERROR", "placeholder_or_too_short")
         else:
             record(name, "PASS", "non_placeholder")
+
+    for name in ("index.tsv", "README.md"):
+        path = figures_dir / name
+        if not path.exists():
+            record(f"figures_{name}", "ERROR", "missing")
+        else:
+            record(f"figures_{name}", "PASS", "present")
 
     for pattern in ("**/*cluster_markers.tsv", "**/*subtype_marker_scores.tsv"):
         matched = sorted((work_dir / "annotation").glob(pattern))
@@ -425,7 +523,7 @@ def run_output_integrity_gate(run_dir: Path) -> pd.DataFrame:
             & (
                 audit_df["feature_name"].isin(FORBIDDEN_PRIMARY_FEATURES_EXACT)
                 | audit_df["feature_name"].astype(str).str.startswith(FORBIDDEN_PRIMARY_PREFIXES)
-                | audit_df["feature_name"].astype(str).str.endswith(FORBIDDEN_PRIMARY_SUFFIXES)
+                | audit_df["feature_name"].astype(str).apply(_has_merge_artifact)
             )
         ]
         if not bad.empty:

@@ -4,11 +4,15 @@
  * Run: npm run auth:feishu
  */
 
-import fs from 'fs';
-import path from 'path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { input, password, confirm } from '@inquirer/prompts';
 import ora from 'ora';
+import {
+  getFeishuCredentialsPath,
+  loadFeishuCredentials,
+  saveFeishuCredentials,
+  type FeishuCredentials,
+} from './feishu-credentials.js';
 import {
   c,
   gradient,
@@ -19,16 +23,6 @@ import {
   boxDivider,
 } from '../setup/ui.js';
 import { setLocale, detectLocale, t, type Locale } from '../setup/i18n.js';
-
-const STORE_DIR = path.join(process.cwd(), 'store');
-const CREDS_PATH = path.join(STORE_DIR, 'feishu-credentials.json');
-
-interface FeishuCredentials {
-  appId: string;
-  appSecret: string;
-  encryptKey?: string;
-  verificationToken?: string;
-}
 
 async function testConnection(
   creds: FeishuCredentials,
@@ -155,32 +149,27 @@ async function main(): Promise<void> {
   println(boxBottom());
   println();
 
+  const credsPath = getFeishuCredentialsPath();
+
   // Check existing
-  if (fs.existsSync(CREDS_PATH)) {
-    try {
-      JSON.parse(fs.readFileSync(CREDS_PATH, 'utf-8'));
-      const overwrite = await confirm({
-        message: `  ${t('feishu.existingFound')}`,
-        default: false,
-      });
-      if (!overwrite) {
-        println(`  ${c.dim}${t('feishu.keeping')}${c.reset}`);
-        const spinner = ora({ text: t('feishu.testing'), indent: 4 }).start();
-        const existing: FeishuCredentials = JSON.parse(
-          fs.readFileSync(CREDS_PATH, 'utf-8'),
+  const existing = loadFeishuCredentials();
+  if (existing) {
+    const overwrite = await confirm({
+      message: `  ${t('feishu.existingFound')}`,
+      default: false,
+    });
+    if (!overwrite) {
+      println(`  ${c.dim}${t('feishu.keeping')}${c.reset}`);
+      const spinner = ora({ text: t('feishu.testing'), indent: 4 }).start();
+      const result = await testConnection(existing);
+      if (result.success) {
+        spinner.succeed(
+          t('feishu.connected', { name: result.botName || 'Unknown' }),
         );
-        const result = await testConnection(existing);
-        if (result.success) {
-          spinner.succeed(
-            t('feishu.connected', { name: result.botName || 'Unknown' }),
-          );
-        } else {
-          spinner.fail(t('feishu.connFailed', { error: result.error || '' }));
-        }
-        process.exit(result.success ? 0 : 1);
+      } else {
+        spinner.fail(t('feishu.connFailed', { error: result.error || '' }));
       }
-    } catch {
-      // Invalid file — continue
+      process.exit(result.success ? 0 : 1);
     }
   }
 
@@ -235,14 +224,16 @@ async function main(): Promise<void> {
   spinner.succeed(t('feishu.connected', { name: testResult.botName || '' }));
 
   // ── Save ──
-  fs.mkdirSync(STORE_DIR, { recursive: true });
-  fs.writeFileSync(CREDS_PATH, JSON.stringify(creds, null, 2));
-  fs.chmodSync(CREDS_PATH, 0o600);
+  saveFeishuCredentials(creds);
 
   // ── Next Steps ──
   println();
   println(boxTop(t('feishu.done')));
-  println(boxLine(`${c.brightGreen}✔${c.reset}  ${t('feishu.saved')}`));
+  println(
+    boxLine(
+      `${c.brightGreen}✔${c.reset}  ${t('feishu.saved', { path: credsPath })}`,
+    ),
+  );
   println(boxDivider());
   println(boxLine(`${c.bold}${t('feishu.next')}${c.reset}`));
   println(boxLine(`${c.brightCyan}1.${c.reset} ${t('feishu.next.1')}`));

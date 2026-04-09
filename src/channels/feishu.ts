@@ -14,12 +14,16 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  STORE_DIR,
   ASSISTANT_NAME,
   GROUPS_DIR,
   TRIGGER_PATTERN,
 } from '../config.js';
 import { storeChatMetadata, setRegisteredGroup } from '../db.js';
+import {
+  loadFeishuCredentials,
+  hasFeishuCredentials,
+  type FeishuCredentials,
+} from '../feishu-credentials.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -31,11 +35,6 @@ import { buildDefaultGroupPrompt } from '../default-group-prompt.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
 // --- Types ---
-
-interface FeishuCredentials {
-  appId: string;
-  appSecret: string;
-}
 
 interface FeishuMessageEvent {
   event_id?: string;
@@ -100,19 +99,11 @@ export class FeishuChannel implements Channel {
   // --- Public Channel interface ---
 
   async connect(): Promise<void> {
-    const credsPath = path.join(STORE_DIR, 'feishu-credentials.json');
-
-    if (!fs.existsSync(credsPath)) {
+    this.credentials = loadFeishuCredentials();
+    if (!this.credentials) {
       logger.warn(
         'Feishu credentials not found. Run `npm run auth:feishu` first.',
       );
-      return;
-    }
-
-    try {
-      this.credentials = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
-    } catch (err) {
-      logger.error({ err }, 'Failed to parse Feishu credentials');
       return;
     }
 
@@ -903,8 +894,7 @@ export class FeishuChannel implements Channel {
 // Self-register the channel — triggers when this module is imported.
 // Returns null if FEISHU credentials are absent (graceful no-op).
 registerChannel('feishu', (opts: ChannelOpts) => {
-  const credsPath = path.join(STORE_DIR, 'feishu-credentials.json');
-  if (!fs.existsSync(credsPath)) {
+  if (!hasFeishuCredentials()) {
     logger.debug('Feishu credentials not found — channel not registered');
     return null;
   }
