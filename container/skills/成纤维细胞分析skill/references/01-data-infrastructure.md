@@ -16,6 +16,14 @@ type: reference
 
 **前置依赖**：`00-constraints.md`
 
+## 硬性执行规则
+
+1. **所有 5 个数据集必须全部加载成功。** 不允许以任何理由跳过、放弃或降级任何数据集。
+2. **禁止以"数据量过大""内存不足""计算能力不足"为由跳过任何数据集。** 当前服务器环境有足够内存和存储处理 ~200 万细胞的全部数据。
+3. **若某个数据集加载失败，必须诊断根因并修复代码后重试，不得 fallback 到子集或直接跳过。**
+4. **以下所有代码规范是强制性的，不是建议性的。** agent 必须严格使用指定的函数、列名、文件路径和转置逻辑，不得自行推断或改写。
+5. **每个数据集加载完成后，必须立即验证：** (a) 细胞数与已知维度匹配；(b) `ACTA2`、`PTPRC` 在 `var_names` 中可命中。验证失败必须报错阻断。
+
 ## 本阶段必须先解决的结构问题
 
 - 主分析在 manifest 阶段就确定唯一 patient-level 行
@@ -90,27 +98,90 @@ type: reference
 
 ## 数据集加载技术规范（强制执行）
 
-以下规范基于实际文件格式验证。agent 生成加载脚本时**必须严格遵循**，不得自行推断文件格式。
+以下规范基于实际文件格式验证。agent 生成加载脚本时**必须严格遵循**，不得自行推断文件格式、列名或维度。
+
+### MTX 加载通用规则（所有 MTX 数据集必须先读这段）
+
+**本仓库中所有 MTX 文件均为 `(features × cells)` 格式。`sc.read_mtx()` 返回的就是这个布局。必须转置为 `(cells × features)` 后再赋值 obs_names 和 var_names。**
+
+强制流程：
+
+```python
+# 步骤 1: 读取 MTX
+adata = sc.read_mtx(mtx_path)
+
+# 步骤 2: 读取 barcodes 和 features
+barcodes = pd.read_csv(bc_path, sep="\t", header=None)[0].values
+features = pd.read_csv(feat_path, sep="\t", header=None)
+
+# 步骤 3: 确定哪一列是 gene symbol
+# - 2列 features 文件: 第2列(index 1)是 gene symbol
+# - 3列 features 文件: 第2列(index 1)是 gene symbol，第1列可能是 Ensembl ID
+gene_symbols = features[1].values
+
+# 步骤 4: 验证维度并转置
+n_barcodes = len(barcodes)   # = 细胞数
+n_features = len(gene_symbols)  # = 基因数
+if adata.shape == (n_features, n_barcodes):
+    adata = adata.T  # 转置！(features, cells) -> (cells, features)
+elif adata.shape == (n_barcodes, n_features):
+    pass  # 已经正确
+else:
+    raise ValueError(f"Dimension mismatch: MTX {adata.shape}, expected ({n_features}, {n_barcodes})")
+
+# 步骤 5: 赋值
+adata.obs_names = barcodes
+adata.var_names = gene_symbols
+adata.var_names_make_unique()
+
+# 步骤 6: 验证核心 marker
+for marker in ["ACTA2", "PTPRC", "CD8A"]:
+    if marker in adata.var_names:
+        pass  # OK
+    else:
+        logger.warning(f"Core marker {marker} not found after loading")
+```
 
 ### EGAS00001004809
 
-**格式**：RDS 文件，内含 `dgCMatrix`（稀疏计数矩阵），**不是** Seurat 对象。`pyreadr` 无法读取，必须通过 R 转换或直接用 `scipy.sparse` 读取。
+**格式**：RDS 文件，内含 `dgCMatrix`（稀疏计数矩阵），**不是** Seurat 对象。`pyreadr` 无法读取（会报 `unrecognized object`），必须通过 R 导出。
 
-实际维度（已验证）：
-- Cohort1 cells: 25,288 genes × 175,942 cells
-- 列名格式: `BIOKEY_13_Pre_AAACCTGCAACAACCT-1`（含 patient_id + timepoint）
+**已验证维度**：
+- Cohort1: 25,288 genes × 175,942 cells
+- Cohort2: 25,154 genes × 50,683 cells
+- 列名格式: `BIOKEY_13_Pre_AAACCTGCAACAACCT-1`
 - 行名: HGNC gene symbols（如 `A1BG`, `A2M`）
 
-**推荐加载方式**（Python）：
+**metadata 文件与关键列名（已验证）**：
+
+| 文件 | 关键列 |
+|------|--------|
+| `1872-BIOKEY_metaData_cohort1_web.csv` | `Cell`（cell ID，作为 index）, `patient_id`, `timepoint`（Pre/Post）, `expansion`（E/NE）, `cellType`, `cohort` |
+| `1871-BIOKEY_metaData_cohort2_web.csv` | 同上 |
+
+**强制加载代码**：
 
 ```python
-import subprocess, tempfile, os, scipy.io, scipy.sparse
-import anndata as ad, pandas as pd
+import subprocess, tempfile, os
+import scanpy as sc, pandas as pd
 
-def load_egas_cohort1():
-    """通过 R 将 dgCMatrix RDS 转换为 scipy MTX + TSV，再用 scanpy 读取"""
-    rds_path = "/tos-mlp-zgci/omics/EGAS00001004809/1863-counts_cells_cohort1.rds"
-    tmp_dir = tempfile.mkdtemp(prefix="egas_c1_")
+def load_egas_cohort(cohort_num):
+    """
+    cohort_num: 1 或 2
+    通过 R 将 dgCMatrix RDS 转换为 MTX + TSV，再用 scanpy 读取
+    """
+    rds_map = {
+        1: "/tos-mlp-zgci/omics/EGAS00001004809/1863-counts_cells_cohort1.rds",
+        2: "/tos-mlp-zgci/omics/EGAS00001004809/1867-counts_cells_cohort2.rds",
+    }
+    meta_map = {
+        1: "/tos-mlp-zgci/omics/EGAS00001004809/1872-BIOKEY_metaData_cohort1_web.csv",
+        2: "/tos-mlp-zgci/omics/EGAS00001004809/1871-BIOKEY_metaData_cohort2_web.csv",
+    }
+    rds_path = rds_map[cohort_num]
+    meta_path = meta_map[cohort_num]
+    tmp_dir = tempfile.mkdtemp(prefix=f"egas_c{cohort_num}_")
+
     r_script = f'''
     library(Matrix)
     mat <- readRDS("{rds_path}")
@@ -118,111 +189,251 @@ def load_egas_cohort1():
     writeLines(rownames(mat), file.path("{tmp_dir}", "genes.tsv"))
     writeLines(colnames(mat), file.path("{tmp_dir}", "barcodes.tsv"))
     '''
-    subprocess.run(["/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite/bin/Rscript",
-                    "-e", r_script], check=True, timeout=300)
-    adata = sc.read_mtx(os.path.join(tmp_dir, "matrix.mtx")).T  # 转置：MTX 为 (genes, cells)
+    subprocess.run(
+        ["/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite/bin/Rscript",
+         "-e", r_script],
+        check=True, timeout=600
+    )
+
+    # R writeMM 输出 (genes, cells) 格式的 MTX，需要转置
+    adata = sc.read_mtx(os.path.join(tmp_dir, "matrix.mtx")).T
     adata.var_names = pd.read_csv(os.path.join(tmp_dir, "genes.tsv"), header=None)[0].values
     adata.obs_names = pd.read_csv(os.path.join(tmp_dir, "barcodes.tsv"), header=None)[0].values
-    # 从列名解析 patient_id 和 timepoint
-    parts = adata.obs_names.str.extract(r'BIOKEY_(\d+)_(Pre|Post)_(.*)')
-    adata.obs["patient_id"] = "BIOKEY_" + parts[0]
-    adata.obs["timepoint_raw"] = parts[1]
-    adata.obs["dataset_id"] = "EGAS00001004809_C1"
-    # 合并 metadata
-    meta = pd.read_csv("/tos-mlp-zgci/omics/EGAS00001004809/1872-BIOKEY_metaData_cohort1_web.csv")
-    meta = meta.set_index("Cell")
+    adata.obs["dataset_id"] = f"EGAS00001004809_C{cohort_num}"
+
+    # 合并 metadata — 注意 index 列名是 "Cell"
+    meta = pd.read_csv(meta_path, index_col="Cell")
     adata.obs = adata.obs.join(meta, how="left", rsuffix="_meta")
+
+    # 验证
+    assert adata.n_obs in [175942, 50683], f"EGAS C{cohort_num} cell count unexpected: {adata.n_obs}"
+    logger.info(f"EGAS C{cohort_num}: {adata.n_obs} cells x {adata.n_vars} genes")
     return adata
 ```
 
-Cohort2 同理，使用 `1867-counts_cells_cohort2.rds` 和 `1871-BIOKEY_metaData_cohort2_web.csv`。
-
-**metadata 关键列**：`patient_id`, `timepoint`（Pre/Post）, `expansion`（E/NE 作为 response proxy）, `cellType`, `cohort`
-
 ### GSE236581（colon）
 
-**格式**：10X MTX，但维度布局为 `(features × cells)` = `(36,027 × 975,275)`。barcodes 文件 975,275 行 = cells，features 文件 36,027 行 = genes。
+**格式**：10X MTX，`(features × cells)` = `(36,027 × 975,275)`。
 
-**必须转置**：`sc.read_mtx()` 返回 `(features, cells)`，必须 `.T` 变为 `(cells, features)`。
+**已验证维度**：975,275 cells × 36,027 genes。这是本项目中最大的数据集，**完全可以处理，禁止跳过**。
+
+**barcode 格式**：`CRC01-N-I_AAACGGGTCGTTACGA`（`{patient}-{tissue_type}-{stage}_{10x_barcode}`）
+
+**metadata 来源**：`GSE236581_series_matrix.txt.gz`，barcode 本身包含 patient 和 tissue type 信息。
+
+**强制加载代码**：
 
 ```python
 def load_colon():
     adata = sc.read_mtx("/tos-mlp-zgci/omics/colon/GSE236581_counts.mtx.gz").T  # 转置！
-    barcodes = pd.read_csv("/tos-mlp-zgci/omics/colon/GSE236581_barcodes.tsv.gz", sep="\t", header=None)[0].values
-    features = pd.read_csv("/tos-mlp-zgci/omics/colon/GSE236581_features.tsv.gz", sep="\t", header=None)
-    adata.obs_names = barcodes  # 975,275 cells
-    adata.var_names = features[1].values  # gene symbols
+    barcodes = pd.read_csv("/tos-mlp-zgci/omics/colon/GSE236581_barcodes.tsv.gz",
+                           sep="\t", header=None)[0].values
+    features = pd.read_csv("/tos-mlp-zgci/omics/colon/GSE236581_features.tsv.gz",
+                           sep="\t", header=None)
+    adata.obs_names = barcodes   # 975,275 cells
+    adata.var_names = features[1].values  # gene symbols（第2列）
     adata.var_names_make_unique()
+    adata.obs["dataset_id"] = "GSE236581"
+
     # 从 barcode 解析 patient/sample: "CRC01-N-I_AAACGGGTCGTTACGA"
-    parts = adata.obs_names.str.extract(r'(CRC\d+)-([NT])-(I|II|III|IV)_')
+    parts = adata.obs_names.str.extract(r'(CRC\d+)-([NT])-(I+)_')
     adata.obs["patient_id"] = parts[0]
     adata.obs["tissue_type"] = parts[1].map({"N": "Normal", "T": "Tumor"})
-    adata.obs["dataset_id"] = "GSE236581"
+    adata.obs["tumor_stage"] = parts[2]
+
+    # 验证
+    assert adata.n_obs == 975275, f"Colon cell count unexpected: {adata.n_obs}"
+    logger.info(f"Colon: {adata.n_obs} cells x {adata.n_vars} genes")
     return adata
 ```
 
 ### GSE123813（BCC/SCC）
 
-**格式**：制表符分隔的计数矩阵，行为 genes、列为 cells。这种格式可被 `pd.read_csv` 直接读取。
+**格式**：制表符分隔的计数矩阵，文件中行为 genes（index）、列为 cells（columns）。
 
-**加载方式**：`adata = ad.AnnData(X=counts.T.values)`，`obs_names = counts.columns`（cells），`var_names = counts.index`（genes）。
+**已验证维度**：
+- BCC counts: 53,030 cells × 23,309 genes
+- SCC counts: 26,016 cells × 18,347 genes
 
-无需转置，但 **必须** 转置 pd.DataFrame 的值到 AnnData（因为原文件是 gene × cell）。
+**metadata 文件与关键列名（已验证，禁止搞错）**：
+
+| 文件 | 列名 |
+|------|------|
+| `GSE123813_bcc_scRNA_counts.txt.gz` | index=genes, columns=cell IDs（格式 `bcc.su001.pre.tcell_AAACCTGCAGATCGGA`） |
+| `GSE123813_scc_scRNA_counts.txt.gz` | index=genes, columns=cell IDs（格式 `scc.su010.post_AAACCTGAGACAAAGG`） |
+| `GSE123813_bcc_all_metadata.txt.gz` | **`cell.id`**（不是 `Cell`！）, `patient`, `treatment`, `sort`, `cluster`, `UMAP1`, `UMAP2` |
+| `GSE123813_scc_metadata.txt.gz` | **`cell.id`**（不是 `Cell`！）, `patient`, `treatment`, `cluster`, `UMAP1`, `UMAP2` |
+| `SupplementaryTable.xlsx` | header 在第 4 行（`skiprows=3`）。列: `Patient`, `Tumor Type`, `Treatment`, `Response`（Yes/No/Yes (CR)）, `Best % change` |
+
+**cell ID 命名规则**：
+- BCC: `bcc.{patient}.{pre/post}.{compartment}_{barcode}`
+- SCC: `scc.{patient}.{pre/post}_{barcode}`
+
+**Response 映射**（从 SupplementaryTable）：
+- `Response` 列为 `Yes` 或 `Yes (CR)` → `response_binary = Response`
+- `Response` 列为 `No` → `response_binary = Non-response`
+
+**强制加载代码**：
+
+```python
+def load_gse123813():
+    # 加载 BCC
+    bcc_counts = pd.read_csv("/tos-mlp-zgci/omics/GSE123813/GSE123813_bcc_scRNA_counts.txt.gz",
+                             sep="\t", index_col=0)
+    bcc = ad.AnnData(X=bcc_counts.T.values)
+    bcc.obs_names = bcc_counts.columns
+    bcc.var_names = bcc_counts.index.str.upper()
+    bcc.var_names_make_unique()
+    bcc.obs["dataset_id"] = "GSE123813_BCC"
+    bcc.obs["cancer_type"] = "BCC"
+
+    # 加载 SCC
+    scc_counts = pd.read_csv("/tos-mlp-zgci/omics/GSE123813/GSE123813_scc_scRNA_counts.txt.gz",
+                             sep="\t", index_col=0)
+    scc = ad.AnnData(X=scc_counts.T.values)
+    scc.obs_names = scc_counts.columns
+    scc.var_names = scc_counts.index.str.upper()
+    scc.var_names_make_unique()
+    scc.obs["dataset_id"] = "GSE123813_SCC"
+    scc.obs["cancer_type"] = "SCC"
+
+    # 合并 metadata — 注意列名是 "cell.id"，不是 "Cell"
+    bcc_meta = pd.read_csv("/tos-mlp-zgci/omics/GSE123813/GSE123813_bcc_all_metadata.txt.gz",
+                           sep="\t", index_col="cell.id")
+    bcc.obs = bcc.obs.join(bcc_meta, how="left", rsuffix="_meta")
+
+    scc_meta = pd.read_csv("/tos-mlp-zgci/omics/GSE123813/GSE123813_scc_metadata.txt.gz",
+                           sep="\t", index_col="cell.id")
+    scc.obs = scc.obs.join(scc_meta, how="left", rsuffix="_meta")
+
+    # 加载临床 response 信息
+    clinical = pd.read_excel("/tos-mlp-zgci/omics/GSE123813/SupplementaryTable.xlsx",
+                             skiprows=3, nrows=20)
+    clinical.columns = clinical.iloc[0]
+    clinical = clinical[1:]
+    response_map = dict(zip(
+        clinical["Patient"],
+        clinical["Response"].map(lambda x: "Response" if str(x).startswith("Yes") else "Non-response")
+    ))
+
+    for adata in [bcc, scc]:
+        adata.obs["response_binary"] = adata.obs["patient"].map(response_map)
+        # 从 cell ID 解析 timepoint
+        tp = adata.obs_names.str.extract(r'\.(pre|post)[.\-_]', flags=re.IGNORECASE)[0]
+        adata.obs["treatment_state"] = tp.str.upper().map({"PRE": "PRE", "POST": "POST"})
+
+    logger.info(f"BCC: {bcc.n_obs} cells, SCC: {scc.n_obs} cells")
+    return bcc, scc
+```
 
 ### GSE241934（IIT/RWC）
 
-**格式**：10X MTX，维度布局 `(features × cells)` = `(27,693 × N)`，必须转置。
+**格式**：10X MTX，`(features × cells)` 格式，必须转置。
 
-实际维度（已验证）：
+**已验证维度**：
 - IIT: `(27,693 × 78,691)` → 转置后 78,691 cells × 27,693 genes
 - RWC: `(27,693 × 229,505)` → 转置后 229,505 cells × 27,693 genes
 
-features 文件 3 列格式（Ensembl-style gene symbols）：`AL627309.1`, `FAM87B` 等。
+**文件路径注意**（前缀命名不一致）：
+
+| | MTX 文件 | barcodes 文件 | features 文件 | metadata 文件 |
+|---|---|---|---|---|
+| IIT | `GSE241934_IIT_Matrix.mtx.gz` | `GSE241934_IIT_barcodes.tsv.gz` | `GSE241934_IIT_features.tsv.gz` | `GSE241934_IIT_Meta.txt.gz` |
+| RWC | `GSE241934_Real_Matrix.mtx.gz` | `GSE241934_RWC_barcodes.tsv.gz` | `GSE241934_RWC_features.tsv.gz` | `GSE241934_RWC_Meta.txt.gz`（实际文件名需确认） |
+
+**features 文件 3 列**：`AL627309.1  AL627309.1  Gene Expression`，使用第 2 列（index=1）作为 gene symbol。
+
+**metadata 文件格式**：Tab 分隔，第一列为 cell ID（自动作为 index）。
+
+**gene-axis audit**：在加载并转置后，检查 `var_names` 中数字比例。features 文件第 2 列已经是 gene symbol，转置后 `var_names` 应该全是字母开头的 gene symbol，不会出现数字轴。如果出现，说明转置搞错了。
+
+**强制加载代码**：
 
 ```python
-def load_gse241934_cohort(cohort_name):
-    """cohort_name: 'IIT' 或 'RWC'"""
-    prefix = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name if cohort_name == 'IIT' else 'Real'}"
-    mtx_path = f"{prefix}_Matrix.mtx.gz"
-    bc_path = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name}_barcodes.tsv.gz"
-    feat_path = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name}_features.tsv.gz"
+def load_gse241934():
+    datasets = {}
+    for cohort, mtx_name in [("IIT", "IIT"), ("RWC", "Real")]:
+        base = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort}"
+        adata = sc.read_mtx(f"{base}/GSE241934_{mtx_name}_Matrix.mtx.gz").T  # 转置！
 
-    adata = sc.read_mtx(mtx_path).T  # 转置！(features, cells) -> (cells, features)
-    barcodes = pd.read_csv(bc_path, sep="\t", header=None)[0].values
-    features = pd.read_csv(feat_path, sep="\t", header=None)
-    adata.obs_names = barcodes
-    adata.var_names = features[1].values  # 第2列为 gene symbol
-    adata.var_names_make_unique()
-    adata.obs["dataset_id"] = f"GSE241934_{cohort_name}"
-    # 合并 metadata
-    meta_path = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name if cohort_name == 'IIT' else cohort_name}_Meta.txt.gz"
-    meta = pd.read_csv(meta_path, sep="\t")
-    meta = meta.set_index(meta.columns[0])
-    adata.obs = adata.obs.join(meta, how="left", rsuffix="_meta")
-    return adata
+        barcodes = pd.read_csv(f"{base}/GSE241934_{cohort}_barcodes.tsv.gz",
+                               sep="\t", header=None)[0].values
+        features = pd.read_csv(f"{base}/GSE241934_{cohort}_features.tsv.gz",
+                               sep="\t", header=None)
+
+        adata.obs_names = barcodes
+        adata.var_names = features[1].values  # 第2列是 gene symbol
+        adata.var_names_make_unique()
+        adata.obs["dataset_id"] = f"GSE241934_{cohort}"
+
+        # 合并 metadata — 第一列作为 index
+        meta_files = {
+            "IIT": f"{base}/GSE241934_IIT_Meta.txt.gz",
+            "RWC": f"{base}/GSE241934_RWC_Meta.txt.gz",
+        }
+        meta_path = meta_files[cohort]
+        if os.path.exists(meta_path):
+            meta = pd.read_csv(meta_path, sep="\t", index_col=0)
+            adata.obs = adata.obs.join(meta, how="left", rsuffix="_meta")
+
+        # Gene-axis audit
+        numeric_frac = sum(v[0].isdigit() for v in adata.var_names[:100]) / 100
+        if numeric_frac > 0.5:
+            raise RuntimeError(f"GSE241934_{cohort}: gene axis appears numeric ({numeric_frac:.0%}), transpose or features mismatch")
+
+        logger.info(f"GSE241934_{cohort}: {adata.n_obs} cells x {adata.n_vars} genes")
+        datasets[cohort] = adata
+
+    return datasets["IIT"], datasets["RWC"]
 ```
-
-**注意**：RWC 的 MTX 文件名为 `GSE241934_Real_Matrix.mtx.gz`，barcodes 为 `GSE241934_RWC_barcodes.tsv.gz`，注意前缀不一致。
 
 ### GSE269936
 
-**格式**：38 个 10X 样本，每个样本独立目录（`GSM*_D*/` 下有 `matrix.mtx.gz`, `barcodes.tsv.gz`, `features.tsv.gz`）。
+**格式**：38 个独立 10X 样本，每个在 `GSE269936_RAW/GSM*_D*/` 目录下。单个样本 `(features × cells)` = `(33,538 × ~6,000)`，**总细胞数 321,289**。
 
-单个样本维度（已验证）：`(33,538 × 6,037)` = `(features × cells)`，必须转置。features 3 列格式：`ENSG00000243485  MIR1302-2HG  Gene Expression`，**必须使用第 2 列作为 gene symbol**。
+**已验证**：
+- features 3 列：`ENSG00000243485  MIR1302-2HG  Gene Expression`，**必须使用第 2 列（index=1）作为 gene symbol**
+- sample title 格式：`{patientID}_{timepoint}`（如 `926_1` = patient 926, timepoint 1）
+- `_1` = PRE（基线），`_2`/`_3`/`_4`/`_5` = POST（治疗后）
 
-sample title 格式为 `patientID_timepoint`（如 `926_1` = patient 926, timepoint 1），其中 `_1` = PRE，`_2`/`_3`/`_4`/`_5` = POST 或后续。
+**sample title 与 GSM ID 映射**：从 `GSE269936_series_matrix.txt.gz` 的 `!Sample_title` 和 `!Sample_geo_accession` 行解析。
+
+**response 标签**：`41467_2025_62878_MOESM2_ESM.xlsx` 可能损坏无法读取。若无法读取，从论文 PDF `Yang 2025 Nature Com.pdf` 或其他来源获取，或标记为 `response_unknown`。
+
+**强制加载代码**：
 
 ```python
+import gzip, re
+from pathlib import Path
+
+def parse_gse269936_sample_titles():
+    """从 series matrix 解析 {GSM_ID: sample_title} 映射"""
+    titles = {}
+    with gzip.open("/tos-mlp-zgci/omics/GSE269936/GSE269936_series_matrix.txt.gz", "rt") as f:
+        sample_ids = None
+        for line in f:
+            if line.startswith("!Sample_geo_accession"):
+                sample_ids = line.strip().split("\t")[1:]
+                sample_ids = [s.strip('"') for s in sample_ids]
+            elif line.startswith("!Sample_title") and sample_ids:
+                title_vals = line.strip().split("\t")[1:]
+                title_vals = [t.strip('"') for t in title_vals]
+                titles = dict(zip(sample_ids, title_vals))
+                break
+    return titles
+
 def load_gse269936():
-    """逐样本加载 GSE269936 的 38 个 10X 样本并合并"""
     raw_dir = Path("/tos-mlp-zgci/omics/GSE269936/GSE269936_RAW")
+    sample_map = parse_gse269936_sample_titles()
     adatas = []
-    # 获取 sample title -> GSM ID 映射（从 series matrix 解析）
-    sample_map = parse_gse269936_sample_titles()  # {GSM_ID: "patient_timepoint"}
+    total_cells = 0
 
     for sample_dir in sorted(raw_dir.glob("GSM*_D*")):
-        sample_id = sample_dir.name.split("_")[0]  # GSM8330641
-        mtx_file = list(sample_dir.glob("*_matrix.mtx.gz"))[0]
+        gsm_id = sample_dir.name.split("_")[0]  # e.g. GSM8330641
+        mtx_files = list(sample_dir.glob("*_matrix.mtx.gz"))
+        if not mtx_files:
+            continue
+        mtx_file = mtx_files[0]
         bc_file = list(sample_dir.glob("*_barcodes.tsv.gz"))[0]
         feat_file = list(sample_dir.glob("*_features.tsv.gz"))[0]
 
@@ -234,42 +445,39 @@ def load_gse269936():
         adata.var_names_make_unique()
 
         # 从 sample title 解析 patient 和 timepoint
-        title = sample_map.get(sample_id, "")
+        title = sample_map.get(gsm_id, "")
         parts = title.rsplit("_", 1)
-        adata.obs["patient_id"] = parts[0] if len(parts) == 2 else "unknown"
-        adata.obs["timepoint_num"] = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else -1
-        adata.obs["treatment_state"] = "PRE" if adata.obs["timepoint_num"].iloc[0] == 1 else "POST"
-        adata.obs["sample_id"] = sample_id
+        patient_id = parts[0] if len(parts) == 2 else "unknown"
+        tp_num = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else -1
+
+        adata.obs["patient_id"] = patient_id
+        adata.obs["sample_id"] = gsm_id
+        adata.obs["treatment_state"] = "PRE" if tp_num == 1 else "POST"
         adata.obs["dataset_id"] = "GSE269936"
+        total_cells += adata.n_obs
         adatas.append(adata)
 
     merged = ad.concat(adatas, join="outer", fill_value=0)
     merged.var_names_make_unique()
+
+    # 验证
+    logger.info(f"GSE269936: {len(adatas)} samples, {merged.n_obs} cells (expected ~321,289)")
     return merged
 ```
 
-**响应信息**：GSE269936 的 response 标签需要从论文 Supplementary Table 2（`41467_2025_62878_MOESM2_ESM.xlsx`）提取。若 xlsx 损坏无法读取，需从论文 PDF 或其他来源获取。
+## 各数据集预期细胞数汇总（加载后必须核对）
 
-### MTX 加载通用规则
-
-**所有 MTX 文件在加载时必须检查维度并正确转置**：
-
-```python
-adata = sc.read_mtx(mtx_path)
-# 检查：barcodes 数量应该匹配 cells（obs）维度
-n_barcodes = len(barcodes_df)
-n_features = len(features_df)
-if adata.shape[0] == n_features and adata.shape[1] == n_barcodes:
-    # MTX 格式为 (features, cells)，需要转置
-    adata = adata.T
-elif adata.shape[0] == n_barcodes:
-    # MTX 格式已经是 (cells, features)，不需要转置
-    pass
-else:
-    raise ValueError(f"Dimension mismatch: MTX {adata.shape}, barcodes {n_barcodes}, features {n_features}")
-```
-
-本仓库涉及的所有 MTX 数据集（GSE236581、GSE241934、GSE269936）均为 `(features × cells)` 格式，**必须转置**。不得假设 `sc.read_mtx()` 返回 `(cells × features)`。
+| 数据集 | 预期细胞数 | 基因数 | 路由 |
+|--------|-----------|--------|------|
+| EGAS00001004809_C1 | 175,942 | 25,288 | 主分析 |
+| EGAS00001004809_C2 | 50,683 | 25,154 | 机制分析 |
+| GSE236581 (colon) | **975,275** | 36,027 | 主分析 |
+| GSE123813_BCC | 53,030 | 23,309 | 主分析 |
+| GSE123813_SCC | 26,016 | 18,347 | 主分析 |
+| GSE241934_IIT | 78,691 | 27,693 | 机制分析 |
+| GSE241934_RWC | 229,505 | 27,693 | 机制分析 |
+| GSE269936 | **321,289** | ~33,538 | 主分析 |
+| **合计** | **~1,910,431** | | |
 
 ## 推荐执行顺序
 
@@ -277,7 +485,7 @@ else:
 
 - 列出所有文件路径、扩展名、大小
 - 先校验原始表达矩阵是否存在，再决定各数据集加载方式
-- **必须参照上方「数据集加载技术规范」中的已验证维度和加载代码**
+- **必须严格使用上方「数据集加载技术规范」中的强制加载代码，不得自行改写**
 
 ### 步骤 2：临床 routing 表预构建
 
@@ -304,7 +512,7 @@ else:
   - `numeric_var_frac <= 0.10`
   - `ACTA2`、`CD8A`、`PTPRC` 至少一组核心 marker 可命中
   - 不满足任一条件都必须 `ERROR: Gene_Symbol_Alignment_Failed`
-- 不允许把“marker 匹配不到时写 `NaN`”当作容错；这属于上游数据对象失效，不是可接受缺失
+- 不允许把"marker 匹配不到时写 `NaN`"当作容错；这属于上游数据对象失效，不是可接受缺失
 
 ### 步骤 4：生成正式 manifest
 
@@ -350,7 +558,8 @@ else:
 
 ## 完成检查
 
-- [ ] 所有 5 个数据集的表达矩阵已读取
+- [ ] 所有 5 个数据集的表达矩阵已读取（共 ~190 万细胞）
+- [ ] 每个数据集细胞数与「预期细胞数汇总」表一致
 - [ ] 基因名已标准化为 HGNC Symbol，ACTA2/CD8A/PTPRC 断言通过
 - [ ] `GSE241934_RWC` 未携带纯数字 gene axis 进入 QC cache
 - [ ] 主分析所有行 `analysis_unit = patient`
