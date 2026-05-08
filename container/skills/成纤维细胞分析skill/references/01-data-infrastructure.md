@@ -88,12 +88,196 @@ type: reference
 | `include_mechanism_analysis` | 是否进入机制分析 |
 | `exclude_reason` | 排除原因 |
 
+## 数据集加载技术规范（强制执行）
+
+以下规范基于实际文件格式验证。agent 生成加载脚本时**必须严格遵循**，不得自行推断文件格式。
+
+### EGAS00001004809
+
+**格式**：RDS 文件，内含 `dgCMatrix`（稀疏计数矩阵），**不是** Seurat 对象。`pyreadr` 无法读取，必须通过 R 转换或直接用 `scipy.sparse` 读取。
+
+实际维度（已验证）：
+- Cohort1 cells: 25,288 genes × 175,942 cells
+- 列名格式: `BIOKEY_13_Pre_AAACCTGCAACAACCT-1`（含 patient_id + timepoint）
+- 行名: HGNC gene symbols（如 `A1BG`, `A2M`）
+
+**推荐加载方式**（Python）：
+
+```python
+import subprocess, tempfile, os, scipy.io, scipy.sparse
+import anndata as ad, pandas as pd
+
+def load_egas_cohort1():
+    """通过 R 将 dgCMatrix RDS 转换为 scipy MTX + TSV，再用 scanpy 读取"""
+    rds_path = "/tos-mlp-zgci/omics/EGAS00001004809/1863-counts_cells_cohort1.rds"
+    tmp_dir = tempfile.mkdtemp(prefix="egas_c1_")
+    r_script = f'''
+    library(Matrix)
+    mat <- readRDS("{rds_path}")
+    writeMM(mat, file.path("{tmp_dir}", "matrix.mtx"))
+    writeLines(rownames(mat), file.path("{tmp_dir}", "genes.tsv"))
+    writeLines(colnames(mat), file.path("{tmp_dir}", "barcodes.tsv"))
+    '''
+    subprocess.run(["/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite/bin/Rscript",
+                    "-e", r_script], check=True, timeout=300)
+    adata = sc.read_mtx(os.path.join(tmp_dir, "matrix.mtx")).T  # 转置：MTX 为 (genes, cells)
+    adata.var_names = pd.read_csv(os.path.join(tmp_dir, "genes.tsv"), header=None)[0].values
+    adata.obs_names = pd.read_csv(os.path.join(tmp_dir, "barcodes.tsv"), header=None)[0].values
+    # 从列名解析 patient_id 和 timepoint
+    parts = adata.obs_names.str.extract(r'BIOKEY_(\d+)_(Pre|Post)_(.*)')
+    adata.obs["patient_id"] = "BIOKEY_" + parts[0]
+    adata.obs["timepoint_raw"] = parts[1]
+    adata.obs["dataset_id"] = "EGAS00001004809_C1"
+    # 合并 metadata
+    meta = pd.read_csv("/tos-mlp-zgci/omics/EGAS00001004809/1872-BIOKEY_metaData_cohort1_web.csv")
+    meta = meta.set_index("Cell")
+    adata.obs = adata.obs.join(meta, how="left", rsuffix="_meta")
+    return adata
+```
+
+Cohort2 同理，使用 `1867-counts_cells_cohort2.rds` 和 `1871-BIOKEY_metaData_cohort2_web.csv`。
+
+**metadata 关键列**：`patient_id`, `timepoint`（Pre/Post）, `expansion`（E/NE 作为 response proxy）, `cellType`, `cohort`
+
+### GSE236581（colon）
+
+**格式**：10X MTX，但维度布局为 `(features × cells)` = `(36,027 × 975,275)`。barcodes 文件 975,275 行 = cells，features 文件 36,027 行 = genes。
+
+**必须转置**：`sc.read_mtx()` 返回 `(features, cells)`，必须 `.T` 变为 `(cells, features)`。
+
+```python
+def load_colon():
+    adata = sc.read_mtx("/tos-mlp-zgci/omics/colon/GSE236581_counts.mtx.gz").T  # 转置！
+    barcodes = pd.read_csv("/tos-mlp-zgci/omics/colon/GSE236581_barcodes.tsv.gz", sep="\t", header=None)[0].values
+    features = pd.read_csv("/tos-mlp-zgci/omics/colon/GSE236581_features.tsv.gz", sep="\t", header=None)
+    adata.obs_names = barcodes  # 975,275 cells
+    adata.var_names = features[1].values  # gene symbols
+    adata.var_names_make_unique()
+    # 从 barcode 解析 patient/sample: "CRC01-N-I_AAACGGGTCGTTACGA"
+    parts = adata.obs_names.str.extract(r'(CRC\d+)-([NT])-(I|II|III|IV)_')
+    adata.obs["patient_id"] = parts[0]
+    adata.obs["tissue_type"] = parts[1].map({"N": "Normal", "T": "Tumor"})
+    adata.obs["dataset_id"] = "GSE236581"
+    return adata
+```
+
+### GSE123813（BCC/SCC）
+
+**格式**：制表符分隔的计数矩阵，行为 genes、列为 cells。这种格式可被 `pd.read_csv` 直接读取。
+
+**加载方式**：`adata = ad.AnnData(X=counts.T.values)`，`obs_names = counts.columns`（cells），`var_names = counts.index`（genes）。
+
+无需转置，但 **必须** 转置 pd.DataFrame 的值到 AnnData（因为原文件是 gene × cell）。
+
+### GSE241934（IIT/RWC）
+
+**格式**：10X MTX，维度布局 `(features × cells)` = `(27,693 × N)`，必须转置。
+
+实际维度（已验证）：
+- IIT: `(27,693 × 78,691)` → 转置后 78,691 cells × 27,693 genes
+- RWC: `(27,693 × 229,505)` → 转置后 229,505 cells × 27,693 genes
+
+features 文件 3 列格式（Ensembl-style gene symbols）：`AL627309.1`, `FAM87B` 等。
+
+```python
+def load_gse241934_cohort(cohort_name):
+    """cohort_name: 'IIT' 或 'RWC'"""
+    prefix = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name if cohort_name == 'IIT' else 'Real'}"
+    mtx_path = f"{prefix}_Matrix.mtx.gz"
+    bc_path = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name}_barcodes.tsv.gz"
+    feat_path = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name}_features.tsv.gz"
+
+    adata = sc.read_mtx(mtx_path).T  # 转置！(features, cells) -> (cells, features)
+    barcodes = pd.read_csv(bc_path, sep="\t", header=None)[0].values
+    features = pd.read_csv(feat_path, sep="\t", header=None)
+    adata.obs_names = barcodes
+    adata.var_names = features[1].values  # 第2列为 gene symbol
+    adata.var_names_make_unique()
+    adata.obs["dataset_id"] = f"GSE241934_{cohort_name}"
+    # 合并 metadata
+    meta_path = f"/tos-mlp-zgci/omics/GSE241934/Cohort_{cohort_name}/GSE241934_{cohort_name if cohort_name == 'IIT' else cohort_name}_Meta.txt.gz"
+    meta = pd.read_csv(meta_path, sep="\t")
+    meta = meta.set_index(meta.columns[0])
+    adata.obs = adata.obs.join(meta, how="left", rsuffix="_meta")
+    return adata
+```
+
+**注意**：RWC 的 MTX 文件名为 `GSE241934_Real_Matrix.mtx.gz`，barcodes 为 `GSE241934_RWC_barcodes.tsv.gz`，注意前缀不一致。
+
+### GSE269936
+
+**格式**：38 个 10X 样本，每个样本独立目录（`GSM*_D*/` 下有 `matrix.mtx.gz`, `barcodes.tsv.gz`, `features.tsv.gz`）。
+
+单个样本维度（已验证）：`(33,538 × 6,037)` = `(features × cells)`，必须转置。features 3 列格式：`ENSG00000243485  MIR1302-2HG  Gene Expression`，**必须使用第 2 列作为 gene symbol**。
+
+sample title 格式为 `patientID_timepoint`（如 `926_1` = patient 926, timepoint 1），其中 `_1` = PRE，`_2`/`_3`/`_4`/`_5` = POST 或后续。
+
+```python
+def load_gse269936():
+    """逐样本加载 GSE269936 的 38 个 10X 样本并合并"""
+    raw_dir = Path("/tos-mlp-zgci/omics/GSE269936/GSE269936_RAW")
+    adatas = []
+    # 获取 sample title -> GSM ID 映射（从 series matrix 解析）
+    sample_map = parse_gse269936_sample_titles()  # {GSM_ID: "patient_timepoint"}
+
+    for sample_dir in sorted(raw_dir.glob("GSM*_D*")):
+        sample_id = sample_dir.name.split("_")[0]  # GSM8330641
+        mtx_file = list(sample_dir.glob("*_matrix.mtx.gz"))[0]
+        bc_file = list(sample_dir.glob("*_barcodes.tsv.gz"))[0]
+        feat_file = list(sample_dir.glob("*_features.tsv.gz"))[0]
+
+        adata = sc.read_mtx(str(mtx_file)).T  # 转置！
+        barcodes = pd.read_csv(str(bc_file), sep="\t", header=None)[0].values
+        features = pd.read_csv(str(feat_file), sep="\t", header=None)
+        adata.obs_names = barcodes
+        adata.var_names = features[1].values  # gene symbol 列
+        adata.var_names_make_unique()
+
+        # 从 sample title 解析 patient 和 timepoint
+        title = sample_map.get(sample_id, "")
+        parts = title.rsplit("_", 1)
+        adata.obs["patient_id"] = parts[0] if len(parts) == 2 else "unknown"
+        adata.obs["timepoint_num"] = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else -1
+        adata.obs["treatment_state"] = "PRE" if adata.obs["timepoint_num"].iloc[0] == 1 else "POST"
+        adata.obs["sample_id"] = sample_id
+        adata.obs["dataset_id"] = "GSE269936"
+        adatas.append(adata)
+
+    merged = ad.concat(adatas, join="outer", fill_value=0)
+    merged.var_names_make_unique()
+    return merged
+```
+
+**响应信息**：GSE269936 的 response 标签需要从论文 Supplementary Table 2（`41467_2025_62878_MOESM2_ESM.xlsx`）提取。若 xlsx 损坏无法读取，需从论文 PDF 或其他来源获取。
+
+### MTX 加载通用规则
+
+**所有 MTX 文件在加载时必须检查维度并正确转置**：
+
+```python
+adata = sc.read_mtx(mtx_path)
+# 检查：barcodes 数量应该匹配 cells（obs）维度
+n_barcodes = len(barcodes_df)
+n_features = len(features_df)
+if adata.shape[0] == n_features and adata.shape[1] == n_barcodes:
+    # MTX 格式为 (features, cells)，需要转置
+    adata = adata.T
+elif adata.shape[0] == n_barcodes:
+    # MTX 格式已经是 (cells, features)，不需要转置
+    pass
+else:
+    raise ValueError(f"Dimension mismatch: MTX {adata.shape}, barcodes {n_barcodes}, features {n_features}")
+```
+
+本仓库涉及的所有 MTX 数据集（GSE236581、GSE241934、GSE269936）均为 `(features × cells)` 格式，**必须转置**。不得假设 `sc.read_mtx()` 返回 `(cells × features)`。
+
 ## 推荐执行顺序
 
 ### 步骤 1：清点原始文件
 
 - 列出所有文件路径、扩展名、大小
 - 先校验原始表达矩阵是否存在，再决定各数据集加载方式
+- **必须参照上方「数据集加载技术规范」中的已验证维度和加载代码**
 
 ### 步骤 2：临床 routing 表预构建
 
