@@ -1,0 +1,93 @@
+严格按照 skill 执行：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill
+
+Section 3 只能参照以下 03d 规范文件：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/03d-robust-clustering-annotation-scmarkeragent-sctype.md
+
+本轮启动前必须核对 03d 规范 sha256，期望值为：
+
+fce7b37f561bc4d51de20795bf5c70fb8eac46493a8a8c9c0ff9f1afb96e7a7d
+
+如果 03d hash 不一致，必须立即停止，不得继续运行。
+
+忽略其它 Section 3 规范，包括 03、03b、03c 或旧 run 中的脚本逻辑。若本 prompt 与 03d 规范存在任何细节冲突，以 03d 规范文件为准，不得用本 prompt 中任何旧排序规则覆盖 03d 规范。
+
+任务范围：
+
+只执行 pipeline 的 Section 3。
+不要重跑 Section 1。
+不要重跑 Section 2。
+不要继续执行 pipeline 的 Section 4/5/6/7。
+
+注意：这里说的“不执行 Section 4/5/6/7”是指 pipeline 后续大章节；Section 3 内部自己的 Step4 subtype search、Step5 writeback、Step6 QC/figures 必须照 03d 规范执行完整。
+
+输入：
+
+唯一正式 atlas 输入为：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/atlas/merged.h5ad
+
+唯一正式 QC h5ad 输入来自：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/qc/*/*.qc.h5ad
+
+skill assets 使用：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets
+
+禁止事项：
+
+不要重做 Harmony。
+不要从原始输入重新开始。
+不要使用任何旧 Section3 run 目录中的脚本、结果、checkpoint、cache、per_dataset 输出、annotated h5ad 来冒充本次输出。
+旧 run 目录只能只读用于诊断，不得作为本次流程输入。
+不得 resume 旧 run。
+不得把旧 job/run 挂到本次 current run。
+不得使用 start_job、nohup、setsid、& 或任何后台化方式。
+必须前台运行，并持续输出进度、当前 step、关键日志和 process_index 状态。
+
+新 run 目录：
+
+在合适位置创建全新的 run 目录。
+run 目录必须唯一、洁净、带时间戳。
+所有脚本、日志、work、annotation、qc、figures、checkpoints 都必须写入这个新 run 目录。
+启动前输出新 run 目录路径、输入文件 hash、skill 规范文件 hash、关键 assets 检查结果。
+
+CNV、resolution ranking、过粗分辨率防护、lineage recovery、Step3.5 protected-lineage rescue、Step4 subtype ranking、parent-major repair gate、Artifact/Non-cellular、leakage audit、QC hard gates、最终汇报字段，全部严格按 03d 规范文件执行。
+
+特别注意：
+
+不得保留旧规则“若 ranking 仍相同则选择较低 resolution”。tie-break 与 coarse-resolution 防护必须以当前 03d 规范为准。
+每层注释必须优先恢复证据支持的非 transition、非 unspecified 具体类群；transition/unspecified 只能作为 03d 规范允许的保守出口。
+T cell subtype search 必须审计并优先保留稳定的 Treg / TCF7_CD8 / Cytotoxic_CD8 / Exhausted_CD8 / GammaDelta_T / NKT_like / MAIT_like child cluster，不得把稳定 child cluster 压回粗标签后当作完成。
+
+Step3 必须支持 epithelial/cancer-lineage rescue：
+- 如果 selected-resolution cluster 在 Step3 major search 中被 marker/program/projection 识别为 `Epithelial`、`Cancer_cell`、`epithelial cell`、`tumor epithelial`、`malignant epithelial` 或等价 epithelial/cancer-lineage candidate，即使 Step1 provisional top-level 曾把它判为 Stroma/Immune，也不得继续按 Stroma/Immune broad parent 写回。
+- 这类 cluster 必须先写成 `TopLevel_Compartment=Epithelial_or_cancer_cell` 的候选 rescue 状态，并在审计中记录 `epithelial_or_cancer_cell_rescue_candidate=True`、原始 top1/top2 label、epithelial marker evidence、以及被 Step1 漏判的原因。
+- 不得使用新的非法正式标签名 `epithelial_and_cancer_cell` 写入 `Major_CellType`。正式闭集仍以 03d 规范为准：top-level 使用 `Epithelial_or_cancer_cell`，最终 `Major_CellType` 只能在真实 CNV 后写为 `Cancer_cell` 或 `Epithelial`。
+- 所有 Step3 rescue 出来的 `Epithelial_or_cancer_cell` 候选必须加入 CNV coverage universe，并在 Step5 前拥有真实 CNV 的 `CNV_Score` 与 `Epithelial_CNV_Label`。若 Step2 初始 CNV 已经完成但未覆盖这些候选，必须对这些新增候选补做真实 CNV 或重新以 union candidate universe 执行 CNV；不得直接把它们写成正式 `Epithelial` 或 `Cancer_cell`。
+- `Cancer_cell` vs `Epithelial` 的最终区分只能由真实 CNV label 决定：`Tumor_cells_candidate -> Cancer_cell`，`Normal_Epithelial_candidate -> Epithelial`。在 CNV 完成前，这类细胞只能停留在候选/rescue 审计状态，不能作为正式 final major 导出。
+
+启动 runner 前必须显式自检 Step3.5 stroma protected-lineage rescue 逻辑：
+- Fibroblast parent 中 Pericyte/Smooth_muscle protected_candidate 若 protected_marker_score >= parent_core_marker_score 且 n_cells >= min_cells，必须 rescue_to_major；不得要求额外 +0.10 margin。
+- 若 0 < parent_core_marker_score - protected_marker_score <= 0.15，必须 transition_major / Stroma_transition，且 lineage_rescue_applied=True。
+- hard_review_queue 只能用于 marker 缺失、跨 top-level 强冲突、疑似 doublet/non-cellular、或没有合法 transition namespace 的真正 unresolved case；不得用于同一 Stroma top-level 内 Fibroblast-vs-Pericyte/Smooth_muscle close-score candidate 来替代 rescue_to_major 或 transition_major。
+
+启动 runner 前必须显式自检 protected-lineage audit 写法：
+- `03d_protected_lineage_rescue_audit.tsv` 中凡是有 protected_candidate 的 candidate row，`rescue_decision` 必须是 `rescue_to_major`、`transition_major`、`hard_review_queue`、`explained_as_parent_subtype_signal` 或等价明确决策之一；不得写空值。
+- 非 candidate row 不得被 QC 计入 missing decision。若需要保留非 candidate row，必须写 `protected_candidate=none`、`rescue_decision=not_applicable`，并且 QC 逻辑必须显式排除 `protected_candidate=none/not_applicable/NaN` 的行。
+- 如果 `rescue_decision=not_applicable` 被用于真实 protected_candidate（如 NK_cell、Pericyte、Smooth_muscle、Endothelial、Plasma_B、Mast_cell、Dendritic_cell），必须视为实现错误并在 Step3.5 自检阶段停止，而不是等 Step6 QC。
+
+Step2 CNV 成功后必须立即输出 CNV density 四件套；不得等到 Section3 Step6 才生成，否则后续 hard gate blocked 会导致 CNV 图缺失。
+
+Step3/Step5 必须执行 epithelial CNV coverage closure：
+- 任何最终写回为 `Major_CellType in {Epithelial, Cancer_cell}` 或 `TopLevel_Compartment=Epithelial_or_cancer_cell` 的细胞，必须在 Step2 真实 CNV 结果中有非空 `CNV_Score` 与正式 `Epithelial_CNV_Label`。
+- 正式 `Epithelial_CNV_Label` 只能是 `Tumor_cells_candidate` 或 `Normal_Epithelial_candidate`；空值、NaN、`cnv_blocked`、`cnv_not_run`、`CNV_unresolved`、旧列残留都必须 hard fail。
+- 如果 Step3/Step3.5 产生新的 Epithelial candidate cluster，但这些细胞未被 Step2 CNV 覆盖，必须在 Step5 写回前阻断，或先对这些新增候选执行真实 CNV 并更新 Step2 审计；不得把 CNV_Score=NaN 的细胞写成正式 Epithelial 或 Cancer_cell。
+- `Cancer_cell` 必须全部有 `Tumor_cells_candidate` 支持；`Epithelial` 必须全部有 `Normal_Epithelial_candidate` 支持。不得用 missing CNV 的 Epithelial 作为 normal proxy。
+
+`03d_major_resolution_lineage_recovery_audit.tsv` 中 `lineage_recovered=True` 且 `n_clusters=0` 是 hard fail；runner 必须在进入 Step3.5 前自检并阻断或修正为 `marker_program_detected=True, lineage_recovered=False`。
+
+如果任何硬门禁失败，请立即停止，并报告 blocked 原因、对应文件和具体 error_code。

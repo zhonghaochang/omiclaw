@@ -75,13 +75,13 @@ The following anomalies must be reported immediately when they occur:
 ## Watchdog and Fallback Policy
 
 For any run expected to exceed 60 seconds:
-- use host-managed `start_job` for the primary long-running script whenever possible
-- do not rely on `nohup`, `setsid`, shell `&`, or parent-query-bound foreground processes as the formal execution path
+- do not use host-managed `start_job`; this skill requires foreground execution with user-visible progress
+- do not rely on `nohup`, `setsid`, shell `&`, or any other backgrounding workaround as the formal execution path
 - for very large single-cell runs, long wall-clock time alone is not evidence of a stall
-- if `start_job` is temporarily unavailable but the active foreground run still shows progress, keep monitoring that run rather than interrupting and restarting it
+- keep monitoring an active foreground run when it still shows progress rather than interrupting and restarting it
 - a runtime stall must be evidenced, not guessed; at minimum inspect logs plus process state before deciding a run is blocked
 - for 200k+ cell atlas / compartment jobs, allow multi-hour clustering / Leiden / marker phases and use progress evidence, not impatience, to decide whether to continue
-- treat ad hoc shell backgrounding only as emergency debugging, not as a delivery mechanism
+- if a background job is nevertheless created, treat that as a deviation from this skill and report it explicitly
 
 watchdog is allowed to:
 - monitor

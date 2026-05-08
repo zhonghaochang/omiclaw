@@ -1,0 +1,96 @@
+严格按照 skill 执行：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill
+
+Section 3 只能参照以下 03d 规范文件：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/03d-robust-clustering-annotation-scmarkeragent-sctype.md
+
+本轮启动前必须核对 03d 规范 sha256，期望值为：
+
+93ff06b8cf851cfc1491f47737c3a59e4f5e3f0eb0e53b0203fd1b10cbf6ccce
+
+如果 03d hash 不一致，必须立即停止，不得继续运行。忽略其它 Section 3 规范，包括 03、03b、03c 或旧 run 中的脚本逻辑。若本 prompt 与 03d 规范存在任何细节冲突，以 03d 规范文件为准。
+
+任务范围：
+
+只执行 pipeline 的 Section 3。不要重跑 Section 1/2。不要继续执行 pipeline 的 Section 4/5/6/7。这里的“不执行 Section 4/5/6/7”只指 pipeline 后续大章节；Section 3 内部 Step4 subtype search、Step5 writeback、Step6 QC/figures 必须照 03d 完整执行。
+
+唯一正式 atlas 输入：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/atlas/merged.h5ad
+
+唯一正式 QC h5ad 输入：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/qc/*/*.qc.h5ad
+
+skill assets 根目录：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets
+
+新 run 要求：
+
+创建唯一、洁净、带时间戳的新 run 目录；所有 scripts/logs/work/annotation/qc/figures/checkpoints 只能写入这个新目录。不得 resume 旧 run，不得挂旧 job，不得使用 start_job/nohup/setsid/& 或任何后台化方式。必须前台运行并持续输出当前 step、关键日志和 process_index 状态。
+
+跨 run 读取硬门禁：
+
+运行时允许读取的 run 路径只有上面列出的 Section2 atlas/QC 输入，以及本轮新 run 自身输出。禁止读取任何旧 Section3 run 或其它 run 的 scripts、work/annotation、work/checkpoints、work/cache、per_dataset、section4_input、annotated h5ad、qc 结果或 figure/source_data 作为本轮输入。启动前必须写出 input_access_allowlist.tsv 和 runtime_input_manifest.tsv；若检测到旧 run 产物被作为 runtime 输入，立即 hard fail：ERROR:cross_run_or_old_asset_read_detected。
+
+03d runtime 必读资产：
+
+- assets/scmarkeragent_db_human.RDS
+- assets/scmarkeragent_bridge_config.json
+- assets/scmarkeragent_label_projection.tsv
+- assets/sctype/sctype_score_.R 可作为 scoring helper；正式 gene sets / raw labels 必须从 scmarkeragent_db_human.RDS 构建
+- assets/gencode.v44.gene_positions.tsv.gz
+- assets/dictionary/03d_fixed_projection_contract_top_level.tsv
+- assets/dictionary/03d_fixed_projection_contract_major_celltype.tsv
+- assets/dictionary/03d_fixed_projection_contract_subtype.tsv
+- assets/dictionary/03d_raw_to_standard_projection_policy.tsv
+- assets/dictionary/03d_merge_conflict_unknown_policy.tsv
+- assets/dictionary/03d_stage_aware_raw_to_standard_projection_dictionary.tsv
+- assets/dictionary/03d_subtype_raw_label_projection_overrides.tsv
+- assets/dictionary/03d_projection_review_queue.tsv
+- assets/dictionary/03d_manual_normalization_map.tsv
+- assets/immune_subtype_markers.tsv 和 assets/stroma_subtype_markers.tsv 只能用于 marker coherence / rescue / QC，不能生成 raw output。
+
+03d runtime 默认不得读取的冗余/历史资产：
+
+assets/Immune_All_Low.pkl、assets/PanglaoDB_makers.tsv、assets/Cell_marker_Seq.xlsx、assets/gencode.v44.annotation.gtf.gz、assets/stroma_subtype_markers_manual.xlsx、assets/pubmed_document.csv、assets/wos_document.csv、assets/read_papers.tsv、assets/transcriptome_feature.tsv、assets/prompt.txt、assets/sctype/ScTypeDB_full.xlsx、assets/sctype/ScTypeDB_short.xlsx、assets/sctype/gene_sets_prepare.R、assets/sctype/sctype_wrapper.R、assets/dictionary/OLD_SAVE*、assets/dictionary/03d_upgrade_*、assets/dictionary/03d_projection_review_queue_legacy_stage_residue.tsv、assets/dictionary/03d_stage4_cross_lineage_removed_from_dictionary*.tsv、assets/dictionary/03d_source_stage_normalization_audit.tsv。若被读入 runtime manifest，必须 fail，除非本轮任务明确是 dictionary maintenance 而非 Section3 run。若 ScTypeDB_full/short.xlsx、PanglaoDB、CellMarker 或其它非 scMarkerAgentDB 被用于生成 `sctype_rawoutput_*`，必须 hard fail：ERROR:sctype_db_used_as_runtime_kb。
+
+scType / scMarkerAgent 原始输出硬门禁：
+
+Step3 major 与 Step4 subtype 的每个 candidate cluster 必须真实调用 scType/scMarkerAgent bridge 或等价本地 scMarkerAgent RDS bridge。必须输出并写入 cluster mapping、figure source 和 h5ad obs：sctype_rawoutput_top1、sctype_rawoutput_top2、sctype_rawoutput_top3、sctype_rawoutput_consensus、sctype_rawoutput_backend、sctype_rawoutput_score_top1，以及 bridge runtime log、matched marker evidence、projection audit。
+
+必须额外写出 `work/annotation/03d_sctype_rawoutput_audit.tsv`，覆盖 Step3/Step4 每个 candidate cluster，至少包含 stage、parent_major、resolution、cluster_id、n_cells、sctype_rawoutput_top1/top2/top3、score_top1/top2/top3、delta、sctype_rawoutput_backend、kb_source、kb_sha256、bridge_runtime_log、projection_input_hash。`kb_source` 必须是 `scmarkeragent_db_human.RDS`。最终汇报必须直接展示该表前 20 行；若不展示，则视为跳过 scType/scMarkerAgent raw output，立即 hard fail：ERROR:sctype_rawoutput_not_shown。正式 raw schema 禁止拼写为 `sctype_rawlable` 或 `raw_lable`。
+
+启动 Step3 前必须执行 bridge preflight：默认使用 `/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite`；Rscript 必须可启动，`Seurat / UCell / HGNChelper / data.table / Matrix / readr / scales` 必须可加载，scmarkeragent_db_human.RDS、bridge config、projection 必须可读，并写出 work/annotation/scmarkeragent_bridge_preflight.tsv，记录 r_env_path、rds_sha256、source_backend、required_packages_available、scmarkeragent_rds_available、sctype_style_scoring_available、local_rds_bridge_available、preflight_status。`ScType` R package 本身是 optional；03d 的正式知识库只能是 scmarkeragent_db_human.RDS，ScTypeDB_full/short.xlsx 禁止作为 runtime KB；若既没有可用 ScType-style scoring 函数，也没有明确的本地 RDS bridge 实现，必须立即 hard fail：ERROR:sctype_bridge_runtime_unavailable；不得因为 R package 缺失而改用 marker scoring 继续。
+
+`sctype_rawoutput_*` 只能来自 scType/scMarkerAgent 原始返回；不得用 Python hard-coded marker scoring、marker_top1、dictionary canonical label、contract fallback、projection_try 或 fallback label 替代。图片和 h5ad 中不得再把正式原始输出命名为 raw_lable/raw_label；如为了兼容保留 legacy raw_label/raw_subtype_label/top1_raw_label 列或图，必须逐行等于对应 `sctype_rawoutput_*`，caption/schema 必须声明其只是 alias，不得反向驱动 projection。若 bridge 未执行、返回空值、缺少 required output columns，或 source_backend 不是 scType/scMarkerAgent/明确等价本地 bridge，立即 hard fail：ERROR:sctype_rawoutput_missing_or_substituted。若 `projection_rule=marker_top1` 或 marker top1 被写入 `sctype_rawoutput_*`、Raw_Label_Primary、figure source 或 Section4 handoff，立即 hard fail：ERROR:marker_score_substituted_for_sctype_rawoutput。
+
+注释优先级：
+
+每层注释必须优先恢复证据支持的非 transition、非 unspecified 具体类群；transition/unspecified 只能作为 03d 允许的保守出口。T cell subtype search 必须审计并优先保留稳定的 Treg / TCF7_CD8 / Cytotoxic_CD8 / Exhausted_CD8 / GammaDelta_T / NKT_like / MAIT_like / CD4_Naive / CD4_Memory / Th1 / Th2 / Th17 / Tfh child cluster，不得把稳定 child cluster 压回粗标签后当作完成。
+
+CNV 与 epithelial/cancer rescue：
+
+Step2 必须真实执行 CNV，使用 assets/gencode.v44.gene_positions.tsv.gz，禁止 BioMart、median proxy、existing-label proxy、旧 CNV label 或 unresolved CNV 伪装结果。Step2 成功后必须立即输出 CNV density pdf/png/source_data/caption 和 epithelial_cnv_density_source_data.tsv。Step3 若识别出 epithelial/cancer-lineage cluster，必须先写入 Epithelial_or_cancer_cell rescue candidate，并加入真实 CNV coverage universe；最终 Cancer_cell vs Epithelial 只能由 Tumor_cells_candidate vs Normal_Epithelial_candidate 决定。Step5 前必须做 epithelial CNV coverage closure；任何 Epithelial/Cancer_cell 缺真实 CNV_Score 或正式 Epithelial_CNV_Label 都必须 blocked。
+
+Resolution / rescue / subtype gate：
+
+Step3 major 多分辨率搜索必须真实重跑 Leiden，ranking 主分数只能用结构性指标和 marker-program QC，不得使用 Major_CellType、Cell_Subtype、TopLevel、CNV label、raw/sctype output 参与主分数或 tie-break。低 resolution 若吞并 NK_cell、Pericyte、Smooth_muscle、Endothelial、B/Plasma_B、Mast/DC 等 protected lineage，必须 underclustering penalty 或 hard reject。Step3.5 必须 cluster-level protected-lineage rescue audit；Fibroblast 内 Pericyte/Smooth_muscle close-score candidate 按 03d 规则 rescue_to_major 或 Stroma_transition，不得直接 hard_review_queue。Step4 每个 searchable parent major 必须独立执行 subtype 多分辨率搜索、独立 scType/scMarkerAgent bridge、独立 marker pool 和 projection audit；不得跨 parent 共享 subtype candidate 或用 contract fallback 强行改写具体 subtype。
+
+QC 必须输出并检查：
+
+work/qc/section3_engineering_qc.tsv
+work/qc/section3_scientific_qc.tsv
+work/qc/section3_process_integrity_qc.tsv
+work/qc/section3_section4_handoff_qc.tsv
+work/qc/section3_issue_list.tsv
+work/qc/section3_qc_report.md
+
+任何 03d 硬门禁失败必须立即停止，不得输出 completed。尤其包括：CNV blocked/unresolved 却继续 Step3、Cancer_cell 无 Tumor_cells_candidate 支持、CNV density 缺失、resolution ranking/leakage audit 缺失或 fail、lineage_recovered=True 但 n_clusters=0、未解释 parent_major_repair_gate_fail、T_cell 全部 unspecified 且无 marker-based 证据、Pericyte/Smooth_muscle 被 Fibroblast/myoCAF 静默吞并、scType/scMarkerAgent raw output 被 marker scoring 替代、旧 run 输入被读取。
+
+最终汇报必须包含：
+
+新 run 目录；atlas hash；03d 规范 hash；QC h5ad 数量；关键 assets hash；runtime_input_manifest 是否只包含 allowlist；冗余/历史资产是否被跳过；真实 CNV 是否成功；Tumor_cells_candidate / Normal_Epithelial_candidate 数量；CNV cutoff、threshold_method、density 图路径；CNV_Score 类型；selected major resolution；03d_major_resolution_ranking.tsv 前几名；leakage audit 是否 fail；scType/scMarkerAgent bridge 是否真实执行、backend、bridge log、sctype_rawoutput 输出路径；必须粘贴 `03d_sctype_rawoutput_audit.tsv` 前 20 行；NK_cell / Pericyte / Smooth_muscle 最终数量；T_cell subtype 分布；Artifact/Non_cellular 数量及 gate 状态；所有硬 QC 是否 pass。若 blocked，报告 blocked 原因、文件和 error_code。

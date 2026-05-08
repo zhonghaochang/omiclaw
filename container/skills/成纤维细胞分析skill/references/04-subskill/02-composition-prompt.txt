@@ -1,0 +1,235 @@
+严格按照以下 Section 4 Map-Reduce 子 skill 执行 composition-only debug run：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-subskill/00-subskill-index.md
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-subskill/00-output-structure-contract.md
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-subskill/01-orchestrator-preflight-catalog.md
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-subskill/02-block-composition-ratio-diversity.md
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-subskill/09-post-integration-screen-delivery.md
+
+本轮只用于 debug composition 流程。
+
+`00-subskill-index.md` 只允许作为 global contract / naming contract / output contract 的索引读取；不得根据其中的推荐运行顺序自动调度未列入本 prompt 的 block。任何未在本 prompt 的“只运行”列表中显式列入的 subskill 均视为 `debug_excluded_modules`，不得执行。
+
+只运行：
+
+1. 前处理：S4.0-S4.2 orchestrator / preflight / metadata backfill / catalog freeze。
+2. Composition block：S4.3 composition、ratio、diversity、差异丰度。
+3. 后处理：只基于 composition block 输出执行 S4.11-S4.13 和必要 QC/图表打包。
+
+不要运行：
+
+- Section 1/2/3。
+- 完整 S4.4 pathway/program。
+- 完整 S4.5 TF/regulon。
+- 完整 S4.6 DE-GSEA/ORA，除非 composition block 内部差异丰度需要最小解释性统计。
+- 完整 S4.7 communication。
+- 完整 S4.8 pseudobulk/HVG。
+- 完整 S4.9 state_multiomics，除非只生成 composition-derived placeholder summary 且标记 `not_run_debug_excluded`。
+- Section 5/6/7。
+
+如果本 prompt 中任何路径、hash、资源或禁止事项与原 Section 4 skill 不一致，以原 skill 为准：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-feature-engineering.md
+
+同时读取原 prompt 作为固定输入、hash 和环境约束：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-prompt.txt
+
+运行模式：
+
+mode = composition_only_debug
+architecture = map_reduce_subskills
+strict_required_modules = false
+schema_dry_run_only = false
+allow_blocked_required_modules = true
+debug_excluded_modules = pathway_program,tf_regulon,de_gsea_ora,communication,pseudobulk_hvg,state_multiomics,external_multiomics
+run_section5 = false
+
+固定环境：
+
+- R 环境：/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite
+- Rscript：/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite/bin/Rscript
+- Python：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-python/bin/python
+- scCODA：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-sccoda/bin/python
+- 数据库：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset
+
+输入 h5ad 不变。唯一正式 Section 3 run 输入仍为：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/web_chat/run_20260429_043147_section3_only_03d_from_feishu_s2_userstrict
+
+只能从该 run 读取 Section 3 -> Section 4 handoff：
+
+- work/section4_input/merged.section3_for_section4.h5ad
+- work/section4_input/per_dataset/*.section3_for_section4.h5ad
+- work/section4_input/section4_h5ad_export_manifest.tsv
+- work/section4_input/section4_obs_schema.tsv
+- work/section4_input/section4_feature_eligibility.tsv
+- work/qc/section3_section4_handoff_qc.tsv
+- work/qc/section3_qc_report.md
+- work/qc/section3_issue_list.tsv
+- work/process/process_index.tsv 或 work/process_index.tsv
+
+不得复制、修改、重写或重新导出输入 h5ad。若 `anndata.read_h5ad(..., backed='r')` 因 `/uns/log1p/base` null IOSpec 报错，只允许使用原 skill 中的只读 reader shim，不得修改 h5ad 文件。
+
+Research-based 既有特征表仍需读取用于 catalog freeze：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/transcriptome_feature.tsv
+
+但本 debug run 只要求实现 composition 可映射的 Research-based 特征；非 composition 方向在 `research_based_feature_realization.tsv` 中标记 `not_run_debug_excluded` 或对应 blocked/context_only 状态，不得填 0 或伪造 proxy。
+
+新 run 目录：
+
+创建全新的 Section 4 composition debug run 目录。run 目录必须唯一、洁净、带时间戳，建议命名：
+
+run_YYYYMMDD_HHMMSS_section4_composition_debug_from_run_20260429_043147_section3_03d
+
+所有脚本、日志、work/features、work/qc、work/process、work/audit 都必须写入这个新 run 目录。
+
+前处理必须完成：
+
+- 校验原 Section4 skill、00-constraints、transcriptome_feature.tsv、handoff h5ad、manifest 和核心 assets hash。
+- 校验 Section3 QC clean；若 QC failed/blocked/hard fail 则停止。
+- 校验 obs 必需列、eligibility、counts/lognorm/X、gene symbol alignment。
+- 回填 response、cancer、treatment、include flags、analysis_unit、source route 字段。
+- 将 dataset_id、patient_id、cancer_type、treatment_type、platform、n_cells_total、QC flag、route 等写入 qc_only，`enter_funnel=False`，不得进入 biomarker 筛查漏斗。
+- 冻结 `feature_catalog.tsv`、`research_based_feature_realization.tsv`、`data_based_feature_catalog.tsv`。
+- 输出 `work/features/mapreduce/frozen_inputs/*`。
+- `work/features/mapreduce/frozen_inputs/block_dispatch_manifest.tsv` 中只能把 `S4B_COMPOSITION_RATIO_DIVERSITY` 标为 required/runnable；其他专业 block 必须标记 `not_required_debug_excluded` 或 `not_run_debug_excluded`。
+- 输出 `work/features/checkpoints/S4.2_feature_catalog_READY`。
+
+前处理模块目录必须输出：
+
+- work/features/orchestrator/orchestrator_summary.tsv
+- work/features/orchestrator/orchestrator_summary.md
+- work/features/orchestrator/orchestrator_manifest.tsv
+- work/features/orchestrator/orchestrator_issue_list.tsv
+- work/features/catalog/catalog_summary.tsv
+- work/features/catalog/catalog_summary.md
+- work/features/catalog/catalog_manifest.tsv
+- work/features/catalog/catalog_feature_qc.tsv
+
+Composition block 必须完成：
+
+- top-level fraction：`comp__all__TopLevelCompartment__<group>`。
+- major fraction：`comp__major__<Major_CellType>`。
+- subtype fraction：`comp__subtype__<Cell_Subtype>`。
+- CAF/Fibroblast context fraction。
+- Immune reference fraction：CD8/Treg/NK/Myeloid/DC/B/Plasma 等可支持项。
+- Tumor/Epithelial reference fraction。
+- top/major/subtype biological safe ratios。
+- diversity/entropy：全局 top/major/subtype，以及 Fibroblast、T/NK、Myeloid、B lineage、Tumor/Epithelial 等 major 内 subtype diversity。
+- R/NR 差异丰度解释性结果：优先 scCODA/Milo/speckle；fallback beta-binomial/quasibinomial GLM 或 Wilcoxon + BH FDR。
+
+Ratio 必须使用：
+
+log2_safe_ratio = log2((numerator + 0.1) / (denominator + 0.1))
+
+禁止直接 `frac_a / frac_b` 入模。
+
+Composition block 必须执行：
+
+- patient_key 与 patient_id 一致性检查。
+- patient-feature 无重复检查。
+- pandas groupby 分类列使用 `observed=True` 或先转 string。
+- 缺失率、近零方差、非缺失 patient 数、非缺失 dataset 数、source cell 支持度 gate。
+- R/NR Wilcoxon/logistic/rank test 宽松单因素 gate，输出 p、BH FDR、effect size、AUC、direction、dataset direction consistency。
+- 若 label-free gate 后 p <= 50，跳过 ElasticNet 并标记 `elasticnet_status=skipped_green_channel`。
+- 若 p > 50，运行 logistic ElasticNet alpha=0.5；ElasticNet 结果标记 `response_aware=True` 和 `requires_trainfold_recompute=True`。
+
+Composition 模块目录必须输出：
+
+- work/features/composition/composition_summary.tsv
+- work/features/composition/composition_summary.md
+- work/features/composition/composition_manifest.tsv
+- work/features/composition/composition_feature_matrix.tsv.gz
+- work/features/composition/composition_feature_meta.tsv
+- work/features/composition/composition_feature_qc.tsv
+- work/features/composition/composition_gate_log.tsv
+- work/features/composition/composition_response_screen.tsv
+- work/features/composition/composition_candidate_features.tsv
+- work/features/composition/composition_issue_list.tsv
+
+同时保留原 skill 兼容输出：
+
+- work/features/substeps/composition_features_sample.tsv
+- work/features/substeps/composition_features_patient.tsv
+- work/features/substeps/composition_ratio_features_patient.tsv
+- work/features/substeps/composition_diversity_features_patient.tsv
+- work/features/explanatory/composition_differential_abundance.tsv
+- work/features/qc/composition_feature_support.tsv
+
+后处理只基于 composition block 输出执行：
+
+- 读取 `work/features/composition/*` 作为主输入。
+- 若其他模块目录缺失，必须在 `work/features/integration/input_structure_reconciliation.tsv` 中标记 `not_run_debug_excluded`，不得当作错误。
+- 只合并 composition 的 `raw_biological_numeric`、`response_derived` 与 `qc_only`，并确保只有 raw_biological_numeric 进入筛查漏斗。
+- 执行 S4.11 label-free global gate。
+- 输出 composition-only 的 `raw_biological_numeric_features.tsv.gz`、`block_screened_candidate_features.tsv`、`global_screened_candidate_features.tsv`、`response_derived_explanatory_index.tsv`、`qc_covariates.tsv`。
+- 输出 composition-only 的 `fibro_features_raw.tsv.gz`、`fibro_features.tsv`、`fibro_features_mechanism.tsv`。
+- 执行 S4.12 composition-only 宽松单因素 gate 和块内 ElasticNet；debug 模式可跳过全局 LASSO/Boruta，但必须记录 `skipped_debug_composition_only`。
+- 生成 Section5 debug input package，但不得运行 Section5 模型。
+- 只生成 composition 相关图和必需 readiness/gate 图；其他图可以生成 blocked/not_run caption。
+
+后处理模块目录必须输出：
+
+- work/features/integration/integration_summary.tsv
+- work/features/integration/integration_summary.md
+- work/features/integration/integration_manifest.tsv
+- work/features/integration/integration_feature_matrix.tsv.gz
+- work/features/integration/integration_feature_meta.tsv
+- work/features/integration/integration_feature_qc.tsv
+- work/features/integration/integration_gate_log.tsv
+- work/features/integration/integration_response_screen.tsv
+- work/features/integration/integration_candidate_features.tsv
+- work/features/integration/integration_issue_list.tsv
+- work/features/integration/input_structure_reconciliation.tsv
+
+Section5 debug package 必须输出：
+
+- work/features/section5/section5_package_summary.tsv
+- work/features/section5/section5_package_summary.md
+- work/features/section5/section5_input_matrix.tsv.gz
+- work/features/section5/section5_feature_dictionary.tsv
+- work/features/section5/section5_feature_groups.tsv
+- work/features/section5/section5_lodo_folds.tsv
+- work/features/section5/section5_ablation_plan.tsv
+- work/features/section5/section5_auc_plot_input_template.tsv
+- work/features/section5/section5_shap_input_manifest.tsv
+- work/features/section5/section5_dmi_input_matrix.tsv.gz
+- work/features/section5/section5_modeling_readiness_qc.tsv
+
+图表要求：
+
+- 必须生成 `Fig_S5_feature_missingness_and_gate`。
+- 必须生成 `Fig_S5b_feature_class_distribution`。
+- 必须生成 `Fig_S5c_univariate_screen_overview`。
+- 必须生成 `Fig_S5d_section5_readiness`。
+- 必须生成 `Fig_S5e_composition_ratio_diversity`，包含 top/major/subtype/source_data。
+- 非 composition 图可以输出 blocked/not_run_debug_excluded caption，不得伪装完成。
+- 必须输出 `work/features/figures/figures_summary.tsv`、`figures_summary.md`、`figures_source_data_manifest.tsv`、`figures_issue_list.tsv`。
+
+process 与日志：
+
+- 每个 substep 开始前写 process 记录。
+- 每个 substep 结束后更新 `work/features/process/section4_process_index.tsv`。
+- 输出 `work/audit/section4_startup_meta.tsv`。
+- 输出 `work/audit/section4_input_hashes.tsv`。
+- 输出 `work/audit/section4_script_provenance.md`。
+- 输出 `work/qc/section4_qc_report.md`。
+- 输出 `work/qc/section4_issue_list.tsv`。
+
+完成检查：
+
+- 已核对原 Section4 skill、00-constraints 和 transcriptome_feature.tsv hash。
+- 已核对输入 h5ad 未复制、未修改、未重新导出。
+- 已核对 Section3 handoff h5ad hash 与 manifest。
+- 已完成 S4.0-S4.2。
+- 已完成 S4.3 composition/ratio/diversity/差异丰度。
+- 已完成 composition-only S4.11-S4.13 后处理。
+- `work/features/composition/composition_summary.tsv/md` 已生成。
+- `work/features/integration/input_structure_reconciliation.tsv` 已将非 composition 模块标记为 `not_run_debug_excluded`。
+- `response_derived` 与 `qc_only` 字段未进入 raw/ElasticNet/LASSO/Boruta biomarker matrix。
+- `fibro_features.tsv` 与主 manifest patient 数一致，或在 QC 中写明 debug 子集原因。
+- Section5 debug 输入包已输出，但没有实际运行 Section5 建模。
+
+如果任何硬门禁失败，请立即停止，并报告 blocked 原因、对应文件和具体 error_code。

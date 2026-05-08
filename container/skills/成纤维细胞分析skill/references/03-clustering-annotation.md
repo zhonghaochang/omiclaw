@@ -236,7 +236,7 @@ work/annotation/checkpoints/
   2. 明确没有新的进展信号
   3. 无进展持续至少 45 分钟
   4. 或者进程已报错退出
-- 若 `start_job` 在当前接口不可用，但前台脚本仍在推进，允许继续以前台方式完成 Section 3；此时只能把 `host_managed_start_job_unavailable` 记为工程限制，**不得**单独据此把 Step 3 判为 `blocked`
+- 本 skill / 本 Section 明确禁止 `start_job`；Section 3 只允许以前台方式执行并持续汇报进展，**不得**把“需要 durable 后台运行”当作前提条件
 - **禁止**为了“避免运行太久”而私自加入 cluster-level 采样、限额 marker 统计、downsample、或其他 Section 3 references 未授权的提速捷径
 - **禁止**使用类似“current foreground execution window”这类未在 skill 中定义的自造理由提前终止 Step 3
 

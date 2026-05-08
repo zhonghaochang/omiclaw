@@ -1,0 +1,401 @@
+严格按照 skill 执行：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill
+
+本轮只执行 pipeline 的 Section 4。
+不要重跑 Section 1。
+不要重跑 Section 2。
+不要重跑 Section 3。
+不要继续执行 Section 5/6/7。
+
+Section 4 只生成 Section 5 所需输入包、fold 定义、feature dictionary、SHAP input manifest、DMI input matrix、AUC plot input template 和 ablation plan；不得训练模型，不得正式计算 AUC、SHAP、LODO、ablation 或 DMI 结论。
+
+必须读取并遵守新版全层次全类群规范：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-feature-engineering.md
+
+Section 4 规范 sha256 期望值：
+
+a83ece79083d8ca3d20c0aba96ef37ec9ed11313ea362cbb43c7a82ff0bef909
+
+必须读取并遵守全局约束：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/00-constraints.md
+
+00-constraints sha256 期望值：
+
+6de5327d29f44060fc320c7ed601ab8ca6579683c407f5607ecbd615b3ff2cae
+
+Research-based 既有特征表：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/transcriptome_feature.tsv
+
+transcriptome_feature.tsv sha256 期望值：
+
+8ffcc7215375ff439da205afd4a727fd381c9bf4897a81136283b679607158c2
+
+如果任一 hash 不一致，必须立即停止，不得继续运行。
+
+运行模式：
+
+mode = full_hierarchy_all_classes
+strict_required_modules = true
+schema_dry_run_only = false
+allow_blocked_required_modules = false
+
+不得读取或执行 major-only 变体：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-feature-engineering-major-only.md
+
+R 环境固定为：
+
+/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite
+
+所有 R 包检查和 R 脚本必须调用：
+
+/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite/bin/Rscript
+
+Section4 Python 环境固定为：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-python/bin/python
+
+scCODA 独立 CPU 环境固定为：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-sccoda/bin/python
+
+pySCENIC CLI 固定为：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-python/bin/pyscenic
+
+固定数据库和资源目录：
+
+- MSigDB/GO: /vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset/msigdb
+  - Hallmark、KEGG legacy、KEGG Medicus、Reactome 必须可读。
+  - GO BP/MF/CC 固定使用 go_bp_org_hs_eg_db_3.18.0.gmt、go_mf_org_hs_eg_db_3.18.0.gmt、go_cc_org_hs_eg_db_3.18.0.gmt。
+- Regulon/TF: /vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset/regulon
+- Communication LR: /vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset/communication
+- CellPhoneDB zip: /vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset/cellphonedb/cellphonedb.zip
+- pySCENIC: /vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset/pyscenic
+
+启动前必须读取并执行以下环境 preflight/README：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/tmp/04-environment.md
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/README.md
+
+输入：
+
+唯一正式 Section 3 run 输入为：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/web_chat/run_20260429_043147_section3_only_03d_from_feishu_s2_userstrict
+
+只能从该 run 读取 Section 3 -> Section 4 handoff：
+
+- work/section4_input/merged.section3_for_section4.h5ad
+- work/section4_input/per_dataset/*.section3_for_section4.h5ad
+- work/section4_input/section4_h5ad_export_manifest.tsv
+- work/section4_input/section4_obs_schema.tsv
+- work/section4_input/section4_feature_eligibility.tsv
+- work/qc/section3_section4_handoff_qc.tsv
+- work/qc/section3_qc_report.md
+- work/qc/section3_issue_list.tsv
+- work/process/process_index.tsv 或 work/process_index.tsv
+
+Section 3 QC 状态必须按结构化内容或上下文解析；不得仅因 `## Hard Fail Checks` 标题误判为 hard fail。若该标题下为 `- none`，视为通过。若 QC 状态无法解析，必须停止并报告 `ERROR: upstream_section3_qc_status_ambiguous`。
+
+若 `anndata.read_h5ad(..., backed='r')` 因 `/uns/log1p/base` 的 null encoding 报 `IOSpec(encoding_type='null', encoding_version='0.1.0')`，必须按 04-feature-engineering.md 注册只读 null IOSpec reader 后重试，并在 layer audit 中记录 `h5ad_null_iospec_shim_applied=True`；不得修改输入 h5ad。
+
+已知 Section 4 handoff h5ad sha256 必须与 manifest 一致：
+
+- merged: 5b2c4281b459d8ce815b615bf74073f825a9911fbaf5b3a01cb2d0f1124bbb8b
+- EGAS00001004809_C1: 5f576749923982cd8e90811bd24a8558faaa64e6dc3aaa90750adbc637bf2102
+- EGAS00001004809_C2: fa4c92d0998f8978a44ceca2e74de6c84523d26326f10c21e608b6a8310c4ccd
+- GSE123813_BCC: 57180dd75e6a172aaf1f4249046abf0c1402b885895069c67ee4eeb571a8becb
+- GSE123813_SCC: ce165e721955366e66b6c5bcdf7d6d967acacbf6c8fb64136f782644c2b8da8d
+
+正式 manifest 输入来自 Section 1/2 原 run，仅允许只读：
+
+- /vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/manifest/manifest.tsv
+- /vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/manifest/manifest_mechanism.tsv
+- /vepfs-mlp2/mlp-public/250266/omiclaw/groups/feishu_c59e3d6da1c4/run_20260404_160559_fibro_icb_egas_gse123813_strict/work/manifest/manifest_all.tsv
+
+manifest sha256 期望值：
+
+- manifest.tsv: 12cc3e7a88159912de0ea3a8e2f9fdb9f9dd461ba2f781c319c6467419c1f34c
+- manifest_mechanism.tsv: 2ad74d084dd8557ad1fb416bd8d07d4747ccd609739179990968e17cfb7b6876
+- manifest_all.tsv: 4a34386a8f7f7ee56d04de9842192f72033b44a18191e0938e86b0dc06115d39
+
+skill assets 使用：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets
+
+Research-based 规则：
+
+- 必须读取 assets/transcriptome_feature.tsv。
+- 不得运行时重新检索论文、阅读 pubmed_document.csv、阅读 wos_document.csv、或根据 read_papers.tsv 自行生成新的文献特征。
+- transcriptome_feature.tsv 中每一行都必须进入 research_based_feature_realization.tsv。
+- 原则是尽可能计算；信息不足、缺少公式/权重/gene set/外部组学/真实工具的文献特征必须显式 blocked/context_only/not_available，不得填 0，不得伪造 proxy。
+
+Data-based 规则：
+
+- 必须先结构化输出 data_based_feature_catalog.tsv，再计算。
+- 不得边算边临时生成未登记特征。
+- data_feature_class、feature_input_class、enter_funnel 和 post_funnel_status 必须使用 04-feature-engineering.md 中的固定枚举。
+- 每个主要生物方向至少需要可计算的 `raw_biological_numeric` 特征进入 raw 漏斗，除非该方向因真实工具/数据库缺失在 strict preflight 阶段停止。
+- `patient` 是建模和 R/NR 比较单位；`All/Major/Subtype` 是特征生成层级。最终矩阵一行一个 patient，但 feature_id 必须保留 `all/major/subtype/major_pair/subtype_pair` 层级。
+- pathway/program、TF/regulon、HVG/module 必须尽可能输出 all、major、subtype 三层；communication 必须输出 major_pair 和 subtype_pair 两层。
+- `computed_partial` 的 Research-based 特征必须对应真实数值或实际映射；只登记计划不得标记 computed_partial。
+
+二元入场角色必须严格区分：
+
+- `raw_biological_numeric`：Label-free、未使用疗效标签生成的客观生物学数值。包括细胞比例、安全 log2 ratio、diversity、pathway/program activity、TF/regulon activity、RSS/RSS-like、communication probability/class score、pseudobulk/HVG/module/NMF/state score、可实现 research-based signature。全部进入统一筛查漏斗。
+- `response_derived`：任何使用 R/NR 或疗效标签生成的结果，包括 DE/GSEA/ORA/differential LR、单因素 OR/AUC/p/FDR、ElasticNet/LASSO 系数、Boruta 状态。禁止进入筛查漏斗，只用于解释和图表。
+- `qc_only`：dataset_id、patient_id、cancer_type、treatment_type、platform、n_cells_total、QC flag、route metadata、hash/provenance。禁止进入 biomarker 筛查漏斗。
+
+只有 `feature_input_class=raw_biological_numeric` 且 `enter_funnel=True` 的列可以进入块内单因素/ElasticNet 和块外 LASSO/Boruta。
+
+禁止事项：
+
+- 不要重做 Harmony。
+- 不要重跑或修改 Section 1/2/3。
+- 不要从原始表达矩阵重新开始构建 atlas。
+- 不要读取旧 Section 4 run 的脚本、结果、feature matrix、checkpoint 或 cache 来冒充本次输出。
+- 不得 resume 旧 Section 4 run。
+- 不得修改输入 Section 3 run 中的任何文件。
+- 不得修改正式 handoff h5ad 的注释列。
+- 不得使用 start_job、nohup、setsid、& 或任何后台化方式。
+- 必须前台运行，并持续输出当前 substep、关键日志和 process index 状态。
+- 不得把 TF mRNA 表达伪装成 TF/regulon activity。
+- 不得用共表达 proxy 冒充 CellChat/CellPhoneDB/LIANA communication。
+- 不得把 dataset_id、cancer_type、treatment_type、n_cells_total 或 QC/provenance 字段作为 trainable biomarker feature。
+
+新 run 目录：
+
+创建全新的 Section 4 run 目录。run 目录必须唯一、洁净、带时间戳，建议命名：
+
+run_YYYYMMDD_HHMMSS_section4_full_hierarchy_from_run_20260429_043147_section3_03d
+
+所有脚本、日志、work/features、work/communication、work/figures、work/qc、work/process、work/audit 都必须写入这个新 run 目录。
+
+启动前必须输出：
+
+- 新 Section 4 run 目录路径
+- Section 4 规范 hash 校验状态
+- 00-constraints hash 校验状态
+- transcriptome_feature.tsv hash 校验状态
+- Section 3 handoff manifest 路径和 hash 校验状态
+- per-dataset h5ad 路径、sha256、n_obs、n_vars、layer
+- manifest 输入路径和 hash 校验状态
+- 固定 R 环境路径和 Rscript 可执行状态
+- Python/R 包与数据库资源 preflight 表
+- 关键 assets 检查结果
+
+本轮 Section 4 必须按以下 substep 完成或 fail-closed：
+
+S4.0 preflight、环境与 Section 3 handoff 审计
+- 输出 work/features/qc/section4_preflight_qc.tsv
+- 输出 work/features/qc/section4_input_schema_audit.tsv
+- 输出 work/features/qc/section4_h5ad_layer_audit.tsv
+- 输出 work/features/qc/section4_celltype_distribution.tsv
+- 输出 work/features/qc/section4_eligibility_audit.tsv
+- 输出 work/features/qc/section4_environment_preflight.tsv
+
+S4.1 manifest metadata backfill 与 QC-only 协变量
+- 用正式 manifest 回填 response、cancer、treatment、include flags、analysis_unit、source route 字段
+- 主分析 patient 行覆盖率必须 100%
+- dataset_id、patient_id、cancer_type、treatment_type、platform、n_cells_total、QC flag 进入 qc_only，`enter_funnel=False`
+- 输出 work/features/feature_metadata_backfill_audit.tsv
+- 输出 work/features/qc/patient_route_reconciliation.tsv
+- 输出 work/features/qc/qc_covariates.tsv
+
+S4.2 Research-based 与 Data-based feature catalog 冻结
+- 输出 work/features/feature_catalog.tsv
+- 输出 work/features/research_based_feature_realization.tsv
+- 输出 work/features/literature_feature_realization.tsv
+- 输出 work/features/data_based_feature_catalog.tsv
+- 输出 work/features/checkpoints/feature_catalog_summary_checkpoint.tsv
+- 输出 work/features/checkpoints/S4.2_feature_catalog_READY
+- 输出 work/features/qc/feature_catalog_qc.tsv
+
+S4.3 composition、ratio、diversity 与差异丰度
+- 计算 top-level、major、subtype fraction
+- ratio 不得只手工输出少数几个；必须从实际 composition 自动派生 top/major/subtype biological safe ratios，并包含 CD8/Treg、CAF/CD8、Myeloid/T cell、Tumor/Immune、myoCAF/iCAF、Treg/Cytotoxic CD8、Exhausted CD8/Cytotoxic CD8 等可支持项
+- diversity 不得只有全局 top/major/subtype 12 个；必须补充 major 内 subtype diversity，例如 Fibroblast/T cell/Myeloid/B/Tumor-Epithelial 内部 diversity
+- 所有 composition/ratio/diversity 表必须检查 patient_key 与 patient_id 一致，patient-feature 不重复；pandas groupby 分类列必须 observed=True 或先转 string
+- 使用 scCODA/Milo/speckle/GLM/Wilcoxon 之一输出 R/NR 差异丰度解释性结果
+- 输出 work/features/substeps/composition_features_patient.tsv
+- 输出 work/features/substeps/composition_ratio_features_patient.tsv
+- 输出 work/features/substeps/composition_diversity_features_patient.tsv
+- 输出 work/features/explanatory/composition_differential_abundance.tsv
+- 输出 work/features/qc/composition_feature_support.tsv
+
+S4.4 pathway/program activity
+- 优先使用 UCell/AUCell/decoupler/GSVA/ssGSEA；scanpy.score_genes 只能作为 fallback
+- 覆盖 CAF state、immune state、tumor state、antigen presentation、IFN、ECM/TGF-beta
+- 不得只硬编码少数 Hallmark；必须读取本地 Hallmark、KEGG legacy、KEGG Medicus、Reactome、GO BP/MF/CC 和 curated programs
+- 必须输出 all/major/subtype 三层 feature；overlap <5 或 <20% 的 gene set 必须真正 blocked，不能进入 raw 漏斗
+- 输出 work/features/substeps/program_activity_features_cell_summary.tsv
+- 输出 work/features/substeps/program_activity_features_sample.tsv
+- 输出 work/features/substeps/program_activity_features_patient.tsv
+- 输出 work/features/substeps/pathway_activity_features_patient.tsv
+- 输出 work/features/substeps/pathway_activity_features_by_axis.tsv
+- 输出 work/features/substeps/program_activity_features_by_axis.tsv
+- 输出 work/features/qc/gene_set_overlap_qc.tsv
+- 输出 work/features/qc/pathway_library_coverage_qc.tsv
+
+S4.5 TF/regulon activity
+- 优先 decoupler + DoRothEA/CollecTRI
+- pySCENIC/SCENIC 作为增强模块，固定使用本地 hg38 v10 clustered ranking 与 v10nr motif annotation；资源可用时应尽量运行，不能默认为 optional 后跳过
+- 必须先输出所有通过 regulon overlap/tmin 的 raw TF activity，再通过 family cap/gate 限流；不得只取全局 top30 后当作原始输出
+- 必须输出 all/major/subtype 三层 TF activity，并输出 SCENIC RSS 或 decoupler RSS-like specificity
+- 若真实 TF/regulon 工具和资源不可用，strict 模式必须停止并报告 blocked_required_module
+- 输出 work/features/substeps/tf_activity_features_patient.tsv
+- 输出 work/features/substeps/tf_activity_features_raw_by_axis.tsv
+- 输出 work/features/substeps/tf_rss_features_patient.tsv
+- 输出 work/features/substeps/scenic_regulon_activity_features_patient.tsv（若启用 SCENIC）
+- 输出 work/features/qc/tf_activity_diagnostics.tsv
+- 输出 work/features/qc/tf_axis_coverage_qc.tsv
+
+S4.6 R/NR DE-GSEA/ORA
+- 按 patient × all/major/subtype pseudobulk 做 R vs NR DE，样本不足的 subtype 明确 blocked
+- 使用 edgeR/limma + fgsea/clusterProfiler 或 gseapy fallback
+- GSEA/ORA 必须使用本地 Hallmark、KEGG、Reactome、GO；DE/GSEA/ORA 是 response-aware explanatory，不得与 pathway activity 混淆
+- 输出均为 `response_derived`，`enter_funnel=False`
+- 输出 work/features/explanatory/de_genes_by_celltype.tsv
+- 输出 work/features/explanatory/gsea_by_celltype.tsv
+- 输出 work/features/explanatory/ora_by_celltype.tsv
+- 输出 work/features/explanatory/enrichment_summary.tsv
+- 输出 work/features/qc/enrichment_qc.tsv
+- 输出 work/features/qc/enrichment_axis_coverage_qc.tsv
+
+S4.7 Cell communication
+- 优先 LIANA，固定使用已验证资源名 consensus/cellphonedb/cellchatdb；也可使用 R CellChat 或 CellPhoneDB Python API + 本地 cellphonedb.zip
+- 不得调用 liana.select_resource("omnipath")，不得使用共表达 proxy
+- 必须真实运行工具和固定 LR database
+- 必须输出 major_pair 和 subtype_pair 两层；subtype-subtype 允许跨 major，并重点覆盖 CAF/T/NK/Myeloid/Cancer/Epithelial/Endothelial/Pericyte
+- 输出 pair-level 和 class-level 特征，LR class 至少覆盖 CHEMOKINE、TGFB、COLLAGEN_ECM、CHECKPOINT、VEGF、IL6、MIF、SPP1；无命中的 class 必须输出 NA/support reason，不能静默消失
+- 若真实工具或数据库不可用，strict 模式必须停止并报告 blocked_required_module
+- 输出 work/communication/communication_matrix_diagnostics.tsv
+- 输出 work/communication/communication_tool_run_manifest.tsv
+- 输出 work/features/substeps/communication_features_patient.tsv
+- 输出 work/features/substeps/communication_class_features_patient.tsv
+- 输出 work/features/explanatory/communication_response_diff.tsv
+- 输出 work/features/explanatory/communication_pair_response_diff.tsv
+- 输出 work/features/qc/communication_feature_qc.tsv
+- 输出 work/features/qc/communication_axis_pair_support_qc.tsv
+
+S4.8 HVG、pseudobulk 与 module
+- 使用 counts 聚合，标准化为全基因 library-size logCPM
+- 不得使用 marker subset 作为 CPM denominator
+- 必须输出 all/major/subtype pseudobulk；raw gene-level feature 必须限流：major 默认不超过 50，重点 subtype 默认不超过 20，非重点 subtype 默认不超过 10
+- HVG module 不得只有 major；每个 major 和重点 subtype 都要生成 module_topN 或写明 blocked reason
+- 输出 work/features/substeps/pseudobulk_manifest.tsv
+- 输出 work/features/substeps/pseudobulk_features_patient.tsv
+- 输出 work/features/substeps/hvg_module_features_patient.tsv
+- 输出 work/features/qc/pseudobulk_feature_qc.tsv
+- 输出 work/features/qc/pseudobulk_gene_celltype_coherence.tsv
+- 输出 work/features/qc/pseudobulk_axis_support_qc.tsv
+
+S4.9 tumor、immune 与 CAF state 汇总
+- 从 composition、pathway/program、TF、communication、HVG/module 中组织三类状态视图
+- 三类状态均需尽可能输出 `raw_biological_numeric` 状态特征，并进入统一筛查漏斗
+- 状态分数必须先做 robust z-score 或 rank-normalization，并记录 component、方向、权重；不得直接对异质原始特征求均值
+- 输出 work/features/substeps/tumor_state_features_patient.tsv
+- 输出 work/features/substeps/immune_state_features_patient.tsv
+- 输出 work/features/substeps/caf_state_features_patient.tsv
+- 输出 work/features/qc/state_feature_summary.tsv
+- 输出 work/features/qc/state_score_component_qc.tsv
+
+S4.10 external multiomics
+- 只有真实 patient-level 外部表存在时读取
+- 缺失时输出 not_available，不得填 0 或推断
+- 输出 work/features/qc/multiomics_feature_availability.tsv
+- 输出 work/features/substeps/multiomics_features_patient.tsv
+
+S4.11 matrix integration 与 label-free gate
+- 输出二元准入矩阵：raw_biological_numeric_features.tsv.gz、block_screened_candidate_features.tsv、global_screened_candidate_features.tsv、response_derived_explanatory_index.tsv、qc_covariates.tsv
+- 输出兼容旧下游的 fibro_features_raw.tsv.gz、fibro_features.tsv、fibro_features_mechanism.tsv；fibro_features_raw.tsv.gz 为所有 label-free raw biological features，fibro_features.tsv 为块外 LASSO/Boruta 后严格候选
+- feature_gate_log.tsv 必须一行一个 feature，不得重复行计数
+- 必须输出 patient_feature_integrity_qc.tsv 和 feature_axis_coverage_qc.tsv，检查 patient_key/patient_id 一致、patient-feature 无重复、各 required family 的 all/major/subtype/pair 覆盖
+- 输出 work/features/fibro_feature_meta.tsv
+- 输出 work/features/fibro_feature_qc.tsv
+- 输出 work/features/feature_gate_log.tsv
+- 输出 work/features/feature_matrix_manifest.tsv
+- 输出 work/features/checkpoints/research_based_feature_summary_checkpoint.tsv
+- 输出 work/features/checkpoints/data_based_feature_summary_checkpoint.tsv
+- 输出 work/features/checkpoints/feature_matrix_build_summary_checkpoint.tsv
+- 输出 work/features/checkpoints/S4.11_feature_matrix_READY
+
+S4.12 unified response-aware funnel
+- 块内执行宽松单因素 gate：logistic regression 或 Wilcoxon/rank test，输出 effect size、AUC、direction、BH FDR，默认 FDR < 0.25 进入 block candidate
+- 块内执行 ElasticNet：每个 block label-free gate 后 p > 50 时运行标准化 logistic ElasticNet alpha=0.5；p <= 50 时记录 skipped_green_channel
+- 块外执行严格 LASSO + Boruta：合并 block candidates 后运行 logistic LASSO alpha=1，再对 LASSO 幸存者运行 Boruta 或 shadow-feature RF/XGBoost
+- 所有 response-aware 筛选结果均标记 response_aware=True、requires_trainfold_recompute=True，不得作为无需折内重算的最终模型白名单
+- 输出 work/features/screening/univariate_response_screen.tsv
+- 输出 work/features/screening/significant_features_exploratory.tsv
+- 输出 work/features/screening/block_elasticnet_screen.tsv
+- 输出 work/features/screening/global_lasso_screen.tsv
+- 输出 work/features/screening/global_boruta_shadow_screen.tsv
+- 输出 work/features/screening/global_confirmed_features.tsv
+- 输出 work/features/screening/section5_candidate_features_label_free.tsv
+- 输出 work/features/screening/section5_candidate_features_trainfold_required.tsv
+- 输出 work/features/qc/univariate_screen_leakage_audit.tsv
+- 输出 work/features/qc/global_screen_leakage_audit.tsv
+
+S4.13 Section 5 输入包
+- 只生成输入包，不运行 Section 5
+- 输出 work/features/section5/section5_input_matrix.tsv.gz
+- 输出 work/features/section5/section5_feature_dictionary.tsv
+- 输出 work/features/section5/section5_feature_groups.tsv
+- 输出 work/features/section5/section5_lodo_folds.tsv
+- 输出 work/features/section5/section5_ablation_plan.tsv
+- 输出 work/features/section5/section5_auc_plot_input_template.tsv
+- 输出 work/features/section5/section5_shap_input_manifest.tsv
+- 输出 work/features/section5/section5_dmi_input_matrix.tsv.gz
+- 输出 work/features/section5/section5_modeling_readiness_qc.tsv
+
+S4.fig Section 4 图包
+- 每张图必须有 pdf、png、source_data.tsv、caption.md
+- Fig_S5e/Fig_S5f/Fig_S5g/Fig_S5h/Fig_S5i 的 source_data 必须保留层级列，且无 patient_key/patient_id 错配；Fig_S5f 必须同时包含 pathway 和 program，Fig_S5h 必须包含 major_pair/subtype_pair 网络或 top LR source data
+- 必须生成 Fig_S5_feature_missingness_and_gate
+- 必须生成 Fig_S5b_feature_class_distribution
+- 必须生成 Fig_S5c_univariate_screen_overview
+- 必须生成 Fig_S5d_section5_readiness
+- 必须生成 Fig_S5e_composition_ratio_diversity
+- 必须生成 Fig_S5f_pathway_program_activity
+- 必须生成 Fig_S5g_tf_activity_or_blocked
+- 必须生成 Fig_S5h_communication_lr_class_or_blocked
+- 必须生成 Fig_S5i_hvg_pseudobulk_summary
+- 必须生成 Fig_S5j_research_feature_realization
+
+process 与日志：
+
+- 每个 substep 开始前写 process 记录
+- 每个 substep 结束后更新 work/features/process/section4_process_index.tsv
+- 输出 work/audit/section4_startup_meta.tsv
+- 输出 work/audit/section4_input_hashes.tsv
+- 输出 work/audit/section4_script_provenance.md
+- 输出 work/qc/section4_qc_report.md
+- 输出 work/qc/section4_issue_list.tsv
+
+完成检查：
+
+- 已核对 Section4、00-constraints 和 transcriptome_feature.tsv hash
+- 已核对固定 R 环境与 R 包 preflight
+- 已核对 Section3 handoff h5ad hash 与 manifest
+- 已核对正式 manifest hash
+- 已优先读取 work/section4_input/*.section3_for_section4.h5ad
+- 未执行 Section1/2/3/5/6/7
+- 未修改输入 Section3 run
+- 未在 Section4 内改写任何注释列
+- feature_catalog.tsv、research_based_feature_realization.tsv、data_based_feature_catalog.tsv 与 checkpoint 已生成
+- 每个主要生物方向都有 `raw_biological_numeric` 特征进入 raw 漏斗，或因 strict required module 缺失而停止
+- response_derived 和 qc_only 字段未进入 raw/ElasticNet/LASSO/Boruta biomarker matrix
+- 通路活性和 DE-GSEA/ORA 已分离
+- TF/regulon 和 communication 均使用真实工具或 strict fail-closed
+- HVG/pseudobulk 已限流，并使用全基因 library-size logCPM
+- fibro_features.tsv 与主 manifest patient 数完全一致
+- 块内宽松单因素 gate + ElasticNet 已输出；块外严格 LASSO + Boruta 已输出，所有 response-aware 候选均标明 requires_trainfold_recompute=True
+- Section5 输入包已输出，但没有实际运行 Section5 建模
+- Fig_S5 系列图包已生成
+
+如果任何硬门禁失败，请立即停止，并报告 blocked 原因、对应文件和具体 error_code。

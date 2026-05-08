@@ -1,0 +1,108 @@
+严格按照以下 Section 4 Map-Reduce 子 skill 执行：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-subskill/00-subskill-index.md
+
+本轮只执行 pipeline 的 Section 4 分块流程。不要重跑 Section 1/2/3，不要继续执行 Section 5/6/7。
+
+如果本 prompt 中任何路径、hash、资源或禁止事项与原 Section 4 skill 不一致，以原 skill 为准：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-feature-engineering.md
+
+同时读取原 prompt 作为固定输入和 hash 约束：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/references/04-prompt.txt
+
+运行模式：
+
+mode = full_hierarchy_all_classes
+architecture = map_reduce_subskills
+strict_required_modules = true
+schema_dry_run_only = false
+allow_blocked_required_modules = false
+run_section5 = false
+
+固定环境：
+
+- R 环境：/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite
+- Rscript：/vepfs-mlp2/mlp-public/250266/miniconda3/envs/omiclaw-r-upstream-lite/bin/Rscript
+- Python：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-python/bin/python
+- scCODA：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-sccoda/bin/python
+- pySCENIC：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/software/section4-python/bin/pyscenic
+- 数据库：/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/dataset
+
+唯一正式 Section 3 run 输入：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/groups/web_chat/run_20260429_043147_section3_only_03d_from_feishu_s2_userstrict
+
+Research-based 既有特征表：
+
+/vepfs-mlp2/mlp-public/250266/omiclaw/container/skills/成纤维细胞分析skill/assets/transcriptome_feature.tsv
+
+禁止事项：
+
+- 不得联网拉包、联网下载数据库或使用 proxy。
+- 不得读取旧 Section 4 run 的结果、cache、脚本冒充本次输出。
+- 不得修改 Section 3 输入 run。
+- 不得改写正式注释列。
+- 不得后台化运行。
+- 不得把 TF mRNA 表达伪装成 TF/regulon activity。
+- 不得用共表达 proxy 冒充 LIANA/CellChat/CellPhoneDB communication。
+- 不得把 dataset_id、cancer_type、treatment_type、n_cells_total、route、QC flag 作为 trainable biomarker。
+
+运行方式：
+
+1. 先执行 /04-subskill/01-orchestrator-preflight-catalog.md。
+   - 生成全新 run 目录。
+   - 校验原 skill、00-constraints、transcriptome_feature、handoff h5ad、manifest 和 assets hash。
+   - 执行 S4.0-S4.2。
+   - 输出 work/features/mapreduce/frozen_inputs。
+   - 输出 work/features/checkpoints/S4.2_feature_catalog_READY。
+
+2. S4.2 READY 后，按需分块运行：
+   - /04-subskill/02-block-composition-ratio-diversity.md
+   - /04-subskill/03-block-pathway-program.md
+   - /04-subskill/04-block-tf-regulon.md
+   - /04-subskill/05-block-de-gsea-ora.md
+   - /04-subskill/06-block-cell-communication.md
+   - /04-subskill/07-block-pseudobulk-hvg-module.md
+
+   每个 block 的主输出必须写入 run 目录下的 work/features/<module>/，例如 composition 写入 work/features/composition/，pathway 写入 work/features/pathway_program/。每个模块目录至少包含 <module>_summary.tsv、<module>_summary.md、<module>_manifest.tsv、<module>_feature_matrix.tsv.gz、<module>_feature_meta.tsv、<module>_feature_qc.tsv、<module>_gate_log.tsv、<module>_response_screen.tsv、<module>_candidate_features.tsv、<module>_issue_list.tsv。原 skill 要求的 work/features/substeps、work/features/qc、work/features/explanatory 等路径必须同步保留。每个 block 必须先输出所有可计算的 label-free `raw_biological_numeric` patient-level 特征，再执行 label-free gate、R/NR 宽松单因素 gate，并在 p > 50 时执行局部 ElasticNet alpha=0.5。所有 response-aware 筛选结果标记 response_aware=True 和 requires_trainfold_recompute=True。`response_derived` 与 `qc_only` 禁止进入任何筛查漏斗。
+
+3. 上述 block 完成后执行：
+   - /04-subskill/08-block-state-multiomics.md
+
+   该 block 从已完成 block 输出组织 tumor、immune、CAF state；外部 multiomics 只有真实 patient-level 表存在时读取，缺失输出 not_available。
+
+4. 最后执行：
+   - /04-subskill/09-post-integration-screen-delivery.md
+
+   合并所有 block 输出，执行全局 gate、严格全局 LASSO + Boruta、S4.12 单因素归档、S4.13 Section 5 输入包和 S4.fig 图包。正式 full run 不得跳过 LASSO/Boruta；composition-only debug 可跳过但必须记录 skip reason。全局候选需标记 response_aware=True、global_lasso_status、boruta_status 和 requires_trainfold_recompute=True。
+
+完成后必须输出：
+
+- work/features/raw_biological_numeric_features.tsv.gz
+- work/features/block_screened_candidate_features.tsv
+- work/features/global_screened_candidate_features.tsv
+- work/features/response_derived_explanatory_index.tsv
+- work/features/qc/qc_covariates.tsv
+- work/features/fibro_features.tsv
+- work/features/fibro_feature_meta.tsv
+- work/features/feature_gate_log.tsv
+- work/features/qc/feature_axis_coverage_qc.tsv
+- work/features/qc/patient_feature_integrity_qc.tsv
+- work/features/*/*_summary.tsv
+- work/features/*/*_summary.md
+- work/features/integration/input_structure_reconciliation.tsv
+- work/features/section5/section5_input_matrix.tsv.gz
+- work/features/section5/section5_feature_dictionary.tsv
+- work/features/section5/section5_lodo_folds.tsv
+- work/features/section5/section5_ablation_plan.tsv
+- work/features/section5/section5_auc_plot_input_template.tsv
+- work/features/section5/section5_shap_input_manifest.tsv
+- work/features/section5/section5_dmi_input_matrix.tsv.gz
+- work/features/section5/section5_modeling_readiness_qc.tsv
+- Fig_S5 系列 pdf/png/source_data/caption
+- work/qc/section4_qc_report.md
+- work/qc/section4_issue_list.tsv
+
+如果任一硬门禁失败，立即停止，并报告 blocked 原因、对应文件和具体 error_code。
